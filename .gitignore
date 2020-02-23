@@ -1,0 +1,7 @@
+.vagrant
+.vscode
+data
+samples
+*.png
+*.tar
+.DS_Store
