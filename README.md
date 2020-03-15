@@ -1,3 +1,8 @@
+Network architecture based on https://blog.paperspace.com/how-to-implement-a-yolo-object-detector-in-pytorch/\
+
+
+
+Follow steps below to download data and install data api\
 From a linux environment run\
 `wget https://repo.anaconda.com/archive/Anaconda3-2019.10-Linux-x86_64.sh` \
 `bash Anaconda3-2019.10-Linux-x86_64.sh`\
