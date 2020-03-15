@@ -14,7 +14,7 @@ from waymo_open_dataset.utils import  frame_utils
 from waymo_open_dataset import dataset_pb2 as open_dataset
 
 
-FILENAME = 'data/segment-1005081002024129653_5313_150_5333_150_with_camera_labels.tfrecord'
+FILENAME = 'data/train/segment-1005081002024129653_5313_150_5333_150_with_camera_labels.tfrecord'
 dataset = tf.data.TFRecordDataset(FILENAME, compression_type='')
 for data in dataset:
     frame = open_dataset.Frame()
@@ -30,6 +30,9 @@ def show_camera_image(camera_image, camera_labels, layout, cmap=None):
 
   ax = plt.subplot(*layout)
 
+  print('********** printing image *************')
+  print(tf.io.extract_jpeg_shape(camera_image.image))
+
   # Draw the camera labels.
   for camera_labels in frame.camera_labels:
     # Ignore camera labels that do not correspond to this camera.
@@ -39,6 +42,8 @@ def show_camera_image(camera_image, camera_labels, layout, cmap=None):
     # Iterate over the individual labels.
     for label in camera_labels.labels:
       # Draw the object bounding box.
+      #print('********** print label ********')
+      #print(label)
       ax.add_patch(patches.Rectangle(
         xy=(label.box.center_x - 0.5 * label.box.length,
             label.box.center_y - 0.5 * label.box.width),
