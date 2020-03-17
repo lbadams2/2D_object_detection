@@ -4,6 +4,7 @@ from waymo_open_dataset.utils import  frame_utils
 from waymo_open_dataset import dataset_pb2 as open_dataset
 
 import tensorflow as tf
+import numpy as np
 import matplotlib.pyplot as plt
 
 from detect_net import DetectNet
@@ -63,24 +64,73 @@ def read_tfrecord(example):
         box_vector[1] = label.box.center_y
         box_vector[2] = label.box.width
         box_vector[3] = label.box.length
+        box_vector[4] = 1 # objectness score
         if label.type == 'TYPE_PEDESTRIAN':
-            box_vector[4] = 1
-        elif label.type == 'TYPE_VEHICLE':
             box_vector[5] = 1
-        else:
+        elif label.type == 'TYPE_VEHICLE':
             box_vector[6] = 1
+        else:
+            box_vector[7] = 1
         true_boxes[i] = box_vector
     
     #train_boxes = create_boxes()
     return true_boxes, front_image
 
 
+# only penalize classification grid cell using SSE
+# only penalize coordinate loss if object present in grid cell and box responsible for that object
+# for cells with no object penalize classification score using SSE
+# for boxes in grid cell that aren't responsible for object (only 1 if 2 anchor boxes) do SSE on object confidence score
+# sum losses for all grid cells
+def loss(model, x, y, training, loss_object):
+    # training=training is needed only if there are layers with different
+    # behavior during training versus inference (e.g. Dropout).
+        y_ = model(x, training=training)
+
+        return loss_object(y_true=y, y_pred=y_)
+
+def grad(model, inputs, targets):
+    with tf.GradientTape() as tape:
+        loss_value = loss(model, inputs, targets, training=True)
+    return loss_value, tape.gradient(loss_value, model.trainable_variables)
+
+
+# each object in training image is assigned to grid cell that contains object's midpoint
+# and anchor box for the grid cell with highest IOU
+def train():
+    FILENAME = 'data/train/segment-1005081002024129653_5313_150_5333_150_with_camera_labels.tfrecord'
+    dataset = tf.data.TFRecordDataset(FILENAME, compression_type='')
+    dataset.map(read_tfrecord, num_parallel_calls=AUTO)
+    dataset.batch(params.batch_size)
+    total_train = len(dataset)
+    num_imgs = total_train
+
+    VAL_FILENAME = 'data/validation/segment-272435602399417322_2884_130_2904_130_with_camera_labels.tfrecord'
+    val_dataset = tf.data.TFRecordDataset(VAL_FILENAME, compression_type='')
+    val_dataset.batch(params.batch_size)
+    total_val = len(val_dataset)
+    
+    model = DetectNet(params.im_width, params.im_height)
+    #model.compile(optimizer='adam',
+    #              loss = 'mse',
+    #              metrics=['accuracy'])
+    loss_object = tf.keras.losses.MeanSquaredError()
+    
+
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+
+
+    for epoch in range(params.epochs):
+        for x, y, img in dataset:
+            loss_value, grads = grad(model, x, y)
+            optimizer.apply_gradients(zip(grads, model.trainable_variables))
+
 
 def print_results(model, dataset):
     history = model.fit_generator(
         dataset,
         steps_per_epoch=total_train, # batch_size,
-        epochs=epochs,
+        epochs=params.epochs,
         validation_data=val_dataset,
         validation_steps=total_val # batch_size
     )
@@ -107,47 +157,6 @@ def print_results(model, dataset):
     plt.legend(loc='upper right')
     plt.title('Training and Validation Loss')
     plt.show()
-
-
-def loss(model, x, y, training, loss_object):
-    # training=training is needed only if there are layers with different
-    # behavior during training versus inference (e.g. Dropout).
-        y_ = model(x, training=training)
-
-        return loss_object(y_true=y, y_pred=y_)
-
-def grad(model, inputs, targets):
-    with tf.GradientTape() as tape:
-        loss_value = loss(model, inputs, targets, training=True)
-    return loss_value, tape.gradient(loss_value, model.trainable_variables)
-
-def train():
-    FILENAME = 'data/train/segment-1005081002024129653_5313_150_5333_150_with_camera_labels.tfrecord'
-    dataset = tf.data.TFRecordDataset(FILENAME, compression_type='')
-    dataset.map(read_tfrecord, num_parallel_calls=AUTO)
-    dataset.batch(batch_size)
-    total_train = len(dataset)
-    num_imgs = total_train
-
-    VAL_FILENAME = 'data/validation/segment-272435602399417322_2884_130_2904_130_with_camera_labels.tfrecord'
-    val_dataset = tf.data.TFRecordDataset(VAL_FILENAME, compression_type='')
-    val_dataset.batch(batch_size)
-    total_val = len(val_dataset)
-    
-    model = DetectNet(im_width, im_height)
-    #model.compile(optimizer='adam',
-    #              loss = 'mse',
-    #              metrics=['accuracy'])
-    loss_object = tf.keras.losses.MeanSquaredError()
-    
-
-    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
-
-
-    for epoch in range(epochs):
-        for x, y, img in dataset:
-            loss_value, grads = grad(model, x, y)
-            optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
 if __name__ == '__main__':
     train()

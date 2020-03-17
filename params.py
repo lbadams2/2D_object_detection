@@ -4,6 +4,11 @@ epochs = 10
 boxes_per_img = 8
 filter_size = 3
 pool_size = 2
+stride = 32
+object_conf = .6
+nms_conf = .5
+coord_loss_weight = 5
+noobj_loss_weight = .5
 ##############################################
 
 
