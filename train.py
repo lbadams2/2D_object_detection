@@ -100,7 +100,7 @@ def loss(model, x, y, training, loss_object):
                     objs_in_cell.append(obj)
                     idxs.append(idx)
                 idx += 1
-                
+
             if objs_in_cell:
                 highest_iou = -1
                 num_objs_cell = len(objs_in_cell)
@@ -134,6 +134,7 @@ def loss(model, x, y, training, loss_object):
                     # need to ensure coordinates for pred vec are absolute over entire image
                     center_sse = (true_vec[0] - pred_vec[0])^2 + (true_vec[1] - pred_vec[1])^2
                     total_loss += params.coord_loss_weight * center_sse
+                    
                     wh_sse = (true_vec[2] - pred_vec[2])^2 + (true_vec[3] - pred_vec[3])^2
                     total_loss = params.coord_loss_weight * wh_sse
 
@@ -144,6 +145,10 @@ def loss(model, x, y, training, loss_object):
                     for c in range(params.num_classes):
                         class_sse += (true_vec[c_idx + c] - pred_vec[c_idx + c])^2
                     total_loss += class_sse
+
+                    obj_conf_sse = (1 - pred_vec[4])^2 + (1 - pred_vec[4])^2
+                    obj_conf_sse = params.noobj_loss_weight * obj_conf_sse
+                    total_loss += obj_conf_sse
 
             # if no object in cell, only calculate loss on the object confidence for each box in cell
             else:
