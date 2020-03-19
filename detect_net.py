@@ -34,10 +34,11 @@ Use 3 anchor boxes, 1 bottom half of the image, 1 left half, and 1 right half
 # each grid cell has 3 boxes associated with it for (3 x (5 + num_classes)) entires in feature map
 # 5 is 4 coordinates and objectness score
 class DetectNet(layers.Layer):
-    def __init__(self, width, height):
+    def __init__(self, width, height, training):
         super(DetectNet, self).__init__()
         self.width = width
         self.height = height
+        self.training = training
         self.grid_width = width / params.stride
         self.grid_height = height / params.stride
 
@@ -72,11 +73,13 @@ class DetectNet(layers.Layer):
         x = predict_transform(x, self.height, self.anchors, params.num_classes, False)
         # now it should have anchors for (60 x 40 x 2 x 8) or (60 x 40 x 16) or (4800 x 8)
 
-        # this will filter 4800 boxes down to 1 box per object, output likely (3 x 7)
+        # this will filter 4800 boxes down to 1 box per object, output likely (3 x 7) or something
         # 8 to 7 b/c removes class probs for non predicted objects and adds class index for predicted object
         # may need to preserve all 4800 boxes for training and return indexes of predicting boxes
-        x = filter_boxes(x)
-        return x
+        pred_idxs = None
+        if not self.training:
+            pred_idxs = filter_boxes(x)
+        return x, pred_idxs
 
     
     # 1 wide and 1 tall anchor box for each grid cell, normalize dims to fit in grid cell, grid should be 1 x 1 square
