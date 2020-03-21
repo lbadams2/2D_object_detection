@@ -20,13 +20,11 @@ dimensions of the anchor used by the bounding box to get (b_w, b_h).
 The center and width-height coordinates are then multiplied by feature map dims to get real coordinates
 
 If stride of 32 is used on (1920 x 1280) image then grid is (60 x 40), 2 anchors means 2 bounding boxes per grid cell
-for 60 x 40 x 3 = 7200 bounding boxes
+for 60 x 40 x 2 = 4800 bounding boxes
 In addition to coordinates, each box will also predict an objectness score and 3 confidence scores(for each class of object)
 The objectness score for a box responsible for and object and boxes surrounding it will be close to 1, while farther boxes
 should be closer to 0.
 In order to filter 4800 boxes down to 1, throw out all boxes below some fixed objectness score threshold
-
-Use 3 anchor boxes, 1 bottom half of the image, 1 left half, and 1 right half
 '''
 
 
@@ -68,38 +66,43 @@ class DetectNet(layers.Layer):
         x = self.linear_1(x)
         x = self.dropout(x)
         x = self.linear_2(x)
-        # x should be (60 x 40 x 8) here
+        # x should be (60 x 40 x 16) here
 
         x = predict_transform(x, self.height, self.anchors, params.num_classes, False)
         # now it should have anchors for (60 x 40 x 2 x 8) or (60 x 40 x 16) or (4800 x 8)
 
         # this will filter 4800 boxes down to 1 box per object, output likely (3 x 7) or something
         # 8 to 7 b/c removes class probs for non predicted objects and adds class index for predicted object
-        # may need to preserve all 4800 boxes for training and return indexes of predicting boxes
         pred_idxs = None
         if not self.training:
             pred_idxs = filter_boxes(x)
         return x, pred_idxs
 
     
-    # 1 wide and 1 tall anchor box for each grid cell, normalize dims to fit in grid cell, grid should be 1 x 1 square
-    # (x_c, y_c, width, height)
-    def create_anchors(self):
-        self.anchors = []
-        
-        wide_anchor = np.zeroes(4)
-        anchor_1[0] = .5 # x center
-        anchor_1[1] = .5 # y center
-        anchor_1[2] = 1 # width
-        anchor_1[3] = .5 # height
-        self.anchors.append(wide_anchor)
+    # 1 wide and 1 tall anchor box for each grid cell, normalize dims to fit in grid cell
+    # not sure if grid cells should be 1 x 1 or (img_width / stride x img_height / stride)
+    @staticmethod
+    def create_anchors():
+        wide_anchor = tf.constant(0, dtype=tf.float64, shape=(2))
+        wide_anchor = tf.Variable(wide_anchor)
+        wide_anchor[0].assign(params.im_width) # width
+        wide_anchor[1].assign(params.im_height / 2) # height
 
-        tall_anchor = np.zeroes(4)
-        anchor_2[0] = .5
-        anchor_2[1] = .5
-        anchor_2[2] = .5
-        anchor_2[3] = 1
-        self.anchors.append(tall_anchor)
+        tall_anchor = tf.constant(0, dtype=tf.float64, shape=(2))
+        tall_anchor = tf.Variable(tall_anchor)
+        tall_anchor[0].assign(params.im_width / 2) # width
+        tall_anchor[1].assign(params.im_height) # height
+
+        # resize anchors to grid cells
+        wide_anchor[0].assign(wide_anchor[0] / params.stride)
+        wide_anchor[1].assign(wide_anchor[1] / params.stride)
+        tall_anchor[0].assign(tall_anchor[0] / params.stride)
+        tall_anchor[1].assign(tall_anchor[1] / params.stride)
+
+        anchors = tf.stack([wide_anchor, tall_anchor])
+        anchors = tf.transpose(anchors, perm=[1, 0])
+
+        return anchors
 
 
     @staticmethod
@@ -206,77 +209,54 @@ class DetectNet(layers.Layer):
         return output
 
 
-    # boxes are stacked along depth dimension in feature map. To get the 2nd box of cell (5, 6) index it
-    # by map[5, 6, (5+num_classes): 2*(5+num_classes)] (3rd dim starts after first bbox attrs and stops at start of 3rd bbox attrs)
-    # this function transforms this into a 2D tensor with each row correspoding to attrs of bounding box
-    # first 3 rows are for bboxes at (0,0) grid cell, next 3 rows for (0,1) cell, etc
-    # this is more useful if we make detections at different scales (different number of grid boxes/strides), then all the scales
-    # can be concatenated
-    # However this also does some necessary ops like sigmoid and the exponential
+    # this applies sigmoids and exponential function to some dims to make them between 0 and 1 or positive
+    # also scales bounding boxes by anchor box dims
     @staticmethod
-    def predict_transform(prediction, inp_dim, anchors, num_classes, CUDA = True):
-        batch_size = prediction.size(0)
-        stride =  inp_dim // prediction.size(2)
-        grid_size = inp_dim // stride
-        bbox_attrs = 5 + num_classes
-        num_anchors = len(anchors)
-
-        # prediction is (grid_cell_x, grid_cell_y, 5 + num_classes)
-        prediction = prediction.view(batch_size, bbox_attrs*num_anchors, grid_size*grid_size)
-        prediction = prediction.transpose(1,2).contiguous()
-        prediction = prediction.view(batch_size, grid_size*grid_size*num_anchors, bbox_attrs)
+    def predict_transform(prediction, anchors):
+        grid_size_x = prediction.shape[1]
+        grid_size_y = prediction.shape[0]
+        # has to be variable to do assignment, need to make sure all gradient data is preserved
+        # when converting from tensor to variable and vice versa
+        prediction = tf.Variable(prediction)
 
         # makes the x_center coordinate between 0 and 1, each grid cell is normalized to 1 x 1
-        prediction[:,:,0] = tf.math.sigmoid(prediction[:,:,0])
+        prediction[:,:,0].assign(tf.math.sigmoid(prediction[:,:,0]))
         # makes the y_center coordinate between 0 and 1, each grid cell is normalized to 1 x 1
-        prediction[:,:,1] = tf.math.sigmoid(prediction[:,:,1])
+        prediction[:,:,1].assign(tf.math.sigmoid(prediction[:,:,1]))
         # makes the objectness score a probability between 0 and 1
-        prediction[:,:,4] = tf.math.sigmoid(prediction[:,:,4])
+        prediction[:,:,4].assign(tf.math.sigmoid(prediction[:,:,4]))
 
         # np.arrange creates an array of ints from 0 to grid_size - 1
-        grid = np.arange(grid_size)
-        # this creates 2D array corresponding to our grid over the image
-        a,b = np.meshgrid(grid, grid)
-
-
-        x_offset = tf.Tensor(a, tf.float64)
-        # this makes it a 2D array with rows and cols instead of 1D array
-        # so there is now an x_offset corresponding to each grid cell in 2D grid
-        x_offset = tf.reshape(x_offset, [-1, -1])
-        y_offset = tf.Tensor(b, tf.float64)
-        y_offset = tf.reshape(y_offset, [-1, -1])
-
-        if CUDA:
-            x_offset = x_offset.cuda()
-            y_offset = y_offset.cuda()
+        grid_x = np.arange(grid_size_x)
+        grid_y = np.arange(grid_size_y)
+        # a contains 40 rows of x-offsets, each row identical counting up to 60
+        # b contains 40 rows of y-offsets, first row 60 0's, second 60 1's, and so on
+        a,b = np.meshgrid(grid_x, grid_y)
+        x_offset = tf.constant(a, dtype=tf.float64)
+        y_offset = tf.constant(b, dtype=tf.float64)
 
         # concatenates the grids horizontally
-        x_y_offset = tf.concat((x_offset, y_offset), 1)
-        # makes num_anchors copies and appends vertically, may need to use tile instead
-        x_y_offset = tf.repeat(x_y_offset, repeats=[num_anchors, num_anchors], axis=0)
-        # unflattens so now we have array for each grid cell, [(0,0), (0,1), ...]
-        x_y_offset = tf.reshape(x_y_offset, [-1, 2])
-        # inserts dimension with size 1, doesn't change arrangement of tensor
-        x_y_offset = tf.expand_dims(x_y_offset, 0)
-        # sets the first elems of each (5 + num_classes) array in predictions to center coordinates we just arranged
-        prediction[:,:,:2] += x_y_offset
+        x_y_offset = tf.stack([x_offset, y_offset])
+        x_y_offset = tf.transpose(x_y_offset, perm=[1,2,0])
 
-        # convert list of 3 anchors to tensor
-        anchors = tf.Tensor(anchors, tf.float64)
-        if CUDA:
-            anchors = anchors.cuda()
-        anchors = anchors.repeat(grid_size*grid_size, 1).unsqueeze(0)
-        # every grid cell gets a copy of the anchors
-        anchors = tf.repeat(anchors, repeats=[grid_size*grid_size, grid_size*grid_size], axis=0)
-        anchors = tf.expand_dims(anchors, 0)
-        # apply exponential transformation to all predicted widths and heights and multiply by anchors
-        # this equation is here https://blog.paperspace.com/how-to-implement-a-yolo-object-detector-in-pytorch/
-        prediction[:,:,2:4] = tf.math.exp(prediction[:,:,2:4])*anchors
+        prediction[:,:,:2].assign(prediction[:,:,:2] + x_y_offset) # center of first box
+        prediction[:,:,8:10].assign(prediction[:,:,8:10] + x_y_offset) # center of second box
+
+        anchors = tf.tile(anchors, [40, 60])
+        anchors = tf.reshape(anchors, [40, 60, 4]) # make 2 anchors per bounding box
+        # exp to make width and height positive then multiply by anchor dims to resize box to anchor
+        prediction[:,:,2:4].assign(tf.math.exp(prediction[:,:,2:4])*anchors[:,:,:2])
+        prediction[:,:,10:12].assign(tf.math.exp(prediction[:,:,10:12])*anchors[:,:,2:4])
 
         # apply sigmoid to class scores to make them probabilities
-        prediction[:,:,5: 5 + num_classes] = tf.math.sigmoid((prediction[:,:, 5 : 5 + num_classes]))
+        # index 4 and 12 is the object conf score, this isn't being modified here
+        prediction[:,:,5: 5 + params.num_classes].assign(tf.math.sigmoid(prediction[:,:, 5 : 5 + params.num_classes]))
+        prediction[:,:,13: 13 + params.num_classes].assign(tf.math.sigmoid(prediction[:,:, 13 : 13 + params.num_classes]))
 
-        # resize coordinates to size of input image, they were normalized to 1 x 1 grid cell boxes
-        prediction[:,:,:4] *= stride
+        # resize coordinates to size of input image
+        prediction[:,:,:4].assign(prediction[:,:,:4] * params.stride)
+        prediction[:,:,8:12].assign(prediction[:,:,8:12] * params.stride)
 
-        return prediction # goal of this function is to return (4800 x 8)
+        prediction = tf.convert_to_tensor(prediction, dtype = tf.float64)
+
+        return prediction

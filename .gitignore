@@ -1,8 +1,8 @@
 .vagrant
 .vscode
 data
-samples
 *.png
 *.tar
 .DS_Store
 notes.txt
+__pycache__
