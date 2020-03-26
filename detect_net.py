@@ -171,11 +171,9 @@ class DetectNet(layers.Layer):
         zeros = tf.zeros([4800, 1], tf.float64)
         where = tf.not_equal(image_pred[:,0], zeros[:,0])
         nonzero_indices = tf.where(where)
-        try:
-            image_pred_ = tf.gather(image_pred, nonzero_indices, axis=0)
-            image_pred_ = tf.squeeze(image_pred_, 1) # image_pred now only contains with object score greater than object_conf
-        except Exception as e:
-            print(e)
+        image_pred_ = tf.gather(image_pred, nonzero_indices, axis=0)
+        image_pred_ = tf.squeeze(image_pred_, 1) # image_pred now only contains with object score greater than object_conf
+        if image_pred_.shape[0] == 0:
             return # if there are no nonzero indices, no predictions for this image
         
         img_classes, _ = tf.unique(image_pred_[:,-2])
