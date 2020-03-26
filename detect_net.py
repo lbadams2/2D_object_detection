@@ -106,32 +106,38 @@ class DetectNet(layers.Layer):
 
 
     @staticmethod
-    def bbox_iou(box1, box2):
-        box1_corner = tf.fill(tf.shape(box1), 0.0)
-        box1_corner[:,0] = (box1[:,0] - box1[:,2]/2) # x center minus width/2
-        box1_corner[:,1] = (box1[:,1] - box1[:,3]/2) # y center minus height/2
-        box1_corner[:,2] = (box1[:,0] + box1[:,2]/2)
-        box1_corner[:,3] = (box1[:,1] + box1[:,3]/2)
+    def bbox_iou(box, box_arr):
+        box_corner = tf.Variable(box)
+        # get bottom left corner
+        box_corner[0].assign(box[0] - box[2]/2) # x center minus width/2
+        box_corner[1].assign(box[1] - box[3]/2) # y center minus height/2
+        # get top right corner
+        box_corner[2].assign(box[0] + box[2]/2)
+        box_corner[3].assign(box[1] + box[3]/2)
 
-        box2_corner = tf.fill(tf.shape(box2), 0.0)
-        box2_corner[:,0] = (box2[:,0] - box2[:,2]/2) # x center minus width/2
-        box2_corner[:,1] = (box2[:,1] - box2[:,3]/2) # y center minus height/2
-        box2_corner[:,2] = (box2[:,0] + box2[:,2]/2)
-        box2_corner[:,3] = (box2[:,1] + box2[:,3]/2)
+        box_arr = tf.Variable(box_arr)
+        box_arr[:,0].assign(box_arr[:,0] - box_arr[:,2]/2) # x center minus width/2
+        box_arr[:,1].assign(box_arr[:,1] - box_arr[:,3]/2) # y center minus height/2
+        box_arr[:,2].assign(box_arr[:,0] + box_arr[:,2]/2)
+        box_arr[:,3].assign(box_arr[:,1] + box_arr[:,3]/2)
 
         #Get the coordinates of bounding boxes
-        b1_x1, b1_y1, b1_x2, b1_y2 = box1_corner[:,0], box1_corner[:,1], box1_corner[:,2], box1_corner[:,3]
-        b2_x1, b2_y1, b2_x2, b2_y2 = box2_corner[:,0], box2_corner[:,1], box2_corner[:,2], box2_corner[:,3]
+        b1_x1, b1_y1, b1_x2, b1_y2 = box[0], box[1], box[2], box[3]
+        b2_x1, b2_y1, b2_x2, b2_y2 = box_arr[:,0], box_arr[:,1], box_arr[:,2], box_arr[:,3]
         
         #get the corrdinates of the intersection rectangle
+        # get max for bottom left corner (x1 and y1 were subtracted from)
         inter_rect_x1 =  tf.math.maximum(b1_x1, b2_x1)
         inter_rect_y1 =  tf.math.maximum(b1_y1, b2_y1)
+        # get min for top right corner (x2 and y2 were added to)
         inter_rect_x2 =  tf.math.minimum(b1_x2, b2_x2)
         inter_rect_y2 =  tf.math.minimum(b1_y2, b2_y2)
         
         #Intersection area
-        inter_area = tf.clip_by_value(inter_rect_x2 - inter_rect_x1 + 1, clip_value_min=0) * \
-                                                    tf.clip_by_value(inter_rect_y2 - inter_rect_y1 + 1, clip_value_min=0)
+        # the x and y offsets are defined to be 1 between grid cells in predict transform
+        # 1 should be max difference, not sure why 1 is added, clip by value makes sure no negative numbers
+        inter_area = tf.clip_by_value(inter_rect_x2 - inter_rect_x1 + 1, clip_value_min=0, clip_value_max=2000) * \
+                                                    tf.clip_by_value(inter_rect_y2 - inter_rect_y1 + 1, clip_value_min=0, clip_value_max=2000)
     
         #Union Area
         b1_area = (b1_x2 - b1_x1 + 1)*(b1_y2 - b1_y1 + 1)
@@ -145,66 +151,85 @@ class DetectNet(layers.Layer):
     # predictions will be (4800 x 8)
     @staticmethod
     def filter_boxes(predictions):
-        conf_mask = tf.Tensor(predictions[:, 4] > params.object_conf, tf.float64)
-        predictions = predictions * conf_mask # this should 0 out the entire 8 vector row of 4th dim if below object threshold
-        '''
-        box_corner = predictions.new(predictions.shape)
-        box_corner[:,0] = (predictions[:,0] - predictions[:,2]/2) # x center minus width/2
-        box_corner[:,1] = (predictions[:,1] - predictions[:,3]/2) # y center minus height/2
-        box_corner[:,2] = (predictions[:,0] + predictions[:,2]/2) 
-        box_corner[:,3] = (predictions[:,1] + predictions[:,3]/2)
-        prediction[:,:4] = box_corner[:,:4] # change from center and width/height to corner coordinates
-        '''
-        max_ind = tf.math.argmax(predictions[:,5:5+ params.num_classes], 1)
-        max_score = tf.reduce_max(predictions[:,5:5+ params.num_classes], reduction_indices=[1])
-        seq = (predictions[:,:5], max_score, max_ind) # (4800 x 5, 1, 1)
-        image_pred = tf.concat(seq, 1) # 4800 x 7
+        predictions = tf.reshape(predictions, [60 * 40 * 2, 8])
+        predictions = tf.Variable(predictions)
+        conf_mask = tf.Variable(predictions[:,4] > params.object_conf)
+        conf_mask = tf.dtypes.cast(conf_mask, tf.double)
+        conf_mask = tf.ones([4800, 8], dtype=tf.double) * tf.expand_dims(conf_mask,1)
+        predictions.assign(predictions * conf_mask) # this should 0 out all 8 box attrs if 4th elem below object threshold
 
+        max_ind = tf.math.argmax(predictions[:,5:5+ params.num_classes], axis=1) # get index of max class prob for each box
+        max_ind = tf.dtypes.cast(max_ind, tf.float64)
+        max_ind = tf.expand_dims(max_ind, 1)
+        max_score = tf.reduce_max(predictions[:,5:5+ params.num_classes], axis=1) # get value of max class prob for each box
+        max_score = tf.dtypes.cast(max_score, tf.float64)
+        max_score = tf.expand_dims(max_score, 1)
+        seq = (predictions[:,:5], max_ind, max_score) # (4800 x 5, 1, 1)
+        image_pred = tf.concat(seq, 1)
+        # image_pred is 4800 x 7 containing coords and highest prob class and index
+        
         zeros = tf.zeros([4800, 1], tf.float64)
-        where = tf.not_equal(image_pred, zeros)
+        where = tf.not_equal(image_pred[:,0], zeros[:,0])
         nonzero_indices = tf.where(where)
         try:
-            image_pred_ = image_pred[nonzero_indices, :]
-            image_pred_ = tf.reshape(image_pred_, [-1, 7]) # should have size(nonzero) x 7
-        except:
-            return # if there are no nonzero indices
+            image_pred_ = tf.gather(image_pred, nonzero_indices, axis=0)
+            image_pred_ = tf.squeeze(image_pred_, 1) # image_pred now only contains with object score greater than object_conf
+        except Exception as e:
+            print(e)
+            return # if there are no nonzero indices, no predictions for this image
         
-        img_classes, _ = tf.unique(image_pred_[:,-1])
+        img_classes, _ = tf.unique(image_pred_[:,-2])
         output = None
         for cls_ind in img_classes:
-            cls_mask = image_pred_*(image_pred_[:,-1] == cls_ind) # get boxes with prediction for this class
-            class_mask_ind = tf.not_equal(cls_mask[:,-1], zeros)
+            cls_mask = image_pred_[:,-2] == cls_ind
+            cls_mask = tf.dtypes.cast(cls_mask, tf.double)
+            cls_mask = tf.ones(image_pred_.shape, dtype=tf.double) * tf.expand_dims(cls_mask,1)
+            cls_mask = image_pred_ * cls_mask # get boxes with prediction for this class
+            class_mask_ind = tf.not_equal(cls_mask[:,-1], zeros[:image_pred_.shape[0],0])
             nonzero_indices = tf.where(class_mask_ind)
-            image_pred_class = tf.reshape(image_pred_[nonzero_indices], [-1,7]) # should be boxes that have a prediction for cls_ind
+            image_pred_class = tf.gather(image_pred_, nonzero_indices, axis=0)
+            if len(image_pred_class.shape) > 2:
+                image_pred_class = tf.squeeze(image_pred_class, 1) # should be boxes that have a prediction for cls_ind
 
             _, sorted_inds = tf.math.top_k(image_pred_class[:,4], k=tf.size(image_pred_class[:,4]))
-            image_pred_class = image_pred_class[sorted_inds]
-            idx = tf.size(image_pred_class)
+            image_pred_class = tf.gather(image_pred_class, sorted_inds, axis=0) # should be sorted by obj score descending now
+            if len(image_pred_class.shape) > 2:
+                image_pred_class = tf.squeeze(image_pred_class, 1)
+            idx = image_pred_class.shape[0]
 
-            # NMS - multiple grid cells may detect same object. Take highest prob box and for each box that has a 
-            # high IOU ( > nms_conf) with that box remove it
-            zeros = tf.zeros([tf.size(image_pred_class), 1], tf.float64)            
+            # NMS - multiple grid cells may detect same object. Iterate from highest prob box to smallest and find IOU
+            # between that box and all with lower confidence, for the boxes with IOU higher than threshold, remove
+            # them from the tensor.  Tensor gets smaller each iteration but rows between 0 and i that weren't previously
+            # removed will remain.
             for i in range(idx):
                 try:
                     # get iou of ith box with all boxes after it
-                    ious = bbox_iou(image_pred_class[i], image_pred_class[i+1:])
-                except ValueError:
+                    ious = DetectNet.bbox_iou(tf.expand_dims(image_pred_class[i], 1), image_pred_class[i+1:])
+                # rows are being removed each iteration, eventually i will exceed size of tensor
+                except ValueError as e:
                     break
 
-                except IndexError:
+                except (IndexError, tf.errors.InvalidArgumentError):
                     break
                 
-                iou_mask = tf.Tensor(ious < params.nms_conf, tf.float64)
-                image_pred_class[i+1:] *= iou_mask # zero out 7 dim vectors for boxes less than threshold
-                where = tf.not_equal(image_pred_class[:,4], zeros)
-                nonzero_indices = tf.where(where)
-                # preserves non zero entries from previous iterations
-                image_pred_class = tf.reshape(image_pred_class[nonzero_indices], [-1, 7])
+                iou_mask = ious < params.nms_conf
+                iou_mask = tf.dtypes.cast(iou_mask, tf.double)
+                iou_mask = tf.ones(image_pred_class[i+1:].shape, dtype=tf.double) * tf.expand_dims(iou_mask,1)
+                iou_mask = image_pred_class[i+1:] * iou_mask # zero out 7 dim vectors for boxes less than threshold
+                image_pred_class = tf.concat([image_pred_class[:i+1], iou_mask], 0) # put preceding i rows back in tensor
+                # 0 to i will be non zero, i+1 and up are affected by the mask
+                iou_mask_ind = tf.not_equal(image_pred_class[:,-1], zeros[:image_pred_class.shape[0], 0])
+                nonzero_indices = tf.where(iou_mask_ind)
+                # every iteration removes rows that overlap too much with a higher confidence prediction
+                # nonzero_indices includes rows kept from previous iterations (0 to i)
+                image_pred_class = tf.gather(image_pred_class, nonzero_indices, axis=0)
+                if len(image_pred_class.shape) > 2:
+                    image_pred_class = tf.squeeze(image_pred_class, 1)
 
             if output is None:
                 output = image_pred_class
             else:
-                output = tf.concat(output, image_pred_class)
+                output = tf.concat([output, image_pred_class], 0)
         
         return output
 
