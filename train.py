@@ -80,34 +80,36 @@ def loss(model, x, y, training):
                 for obj in y[i]: # get true objects in current grid cell
                     cell_x = obj[0] // params.grid_stride
                     cell_y = obj[1] // params.grid_stride
-                    if cell_x == j and cell_y == k:
+                    if cell_x.numpy() == j and cell_y.numpy() == k:
                         objs_in_cell.append(obj)
 
                 if objs_in_cell:
                     highest_iou = -1
                     num_objs_cell = len(objs_in_cell)
                     # iou_arr contains the ious between each box in cell and all objects in cell
-                    iou_arr = np.zeros((num_objs_cell, params.num_anchors))
+                    iou_arr = tf.zeros([num_objs_cell, params.num_anchors], tf.float64)
+                    iou_arr = tf.Variable(iou_arr)
                     for b in range(params.num_anchors): # find predicted box with highest iou with obj in current cell
                         start_ind = b * params.vec_len
                         end_ind = start_ind + params.vec_len
                         pred_vec = y_[i, j, k, start_ind:end_ind]
                         ious = DetectNet.bbox_iou(pred_vec, objs_in_cell) # iou of b with all objs
-                        iou_arr[:,b] = ious.numpy()
+                        iou_arr[:,b].assign(ious)
 
                     # while list size < num_boxes, get max over all rows, if row index of max not in list append to list, make max 0 in iou_arr
                     # pick unique bounding box for each true object
                     pred_to_obj = {}
                     obj_to_pred = {}
-                    while len(pred_to_obj) < min(params.num_anchors, num_objs_cell):                        
-                        max_ = np.amax(iou_arr) # returns max val
-                        result = np.where(iou_arr == max_) # finds index(s) of max val
-                        # result[0] has true obj(row) index, result[1] one has col(box) of max val, just get first elem if tie
-                        max_obj, max_b = list(zip(result[0], result[1]))[0]
+                    while len(pred_to_obj) < min(params.num_anchors, num_objs_cell):
+                        max_ = tf.math.reduce_max(iou_arr) # returns max val
+                        max_mask = tf.equal(iou_arr, max_)
+                        max_loc = tf.where(max_mask)[0] # just get first max
+                        max_obj, max_b = max_loc[0].numpy(), max_loc[1].numpy()
                         if max_b not in pred_to_obj and max_obj not in obj_to_pred:
                             pred_to_obj[max_b] = max_obj
                             obj_to_pred[max_obj] = max_b
-                            iou_arr[:,max_b] = -1 # so this box won't be selected again
+                            bc = tf.constant(-1, shape=[num_objs_cell], dtype=tf.float64)
+                            iou_arr[:,max_b].assign(bc) # so this box won't be selected again
 
                     # if cell contains object(s), only calculate coordinate and class prob loss for box resp for each object
                     for b in pred_to_obj:
