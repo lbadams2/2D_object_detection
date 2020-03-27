@@ -1,5 +1,5 @@
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Conv2D, Flatten, Dropout, MaxPooling2D
+from tensorflow.keras.layers import Dense, Conv2D, Flatten, Dropout, MaxPool2D
 from tensorflow.keras import layers
 import tensorflow as tf
 import numpy as np
@@ -28,26 +28,23 @@ In order to filter 4800 boxes down to 1, throw out all boxes below some fixed ob
 '''
 
 
-
-# each grid cell has 3 boxes associated with it for (3 x (5 + num_classes)) entires in feature map
-# 5 is 4 coordinates and objectness score
+# could resize image to make it square
 class DetectNet(layers.Layer):
-    def __init__(self, width, height, training):
+    def __init__(self, training):
         super(DetectNet, self).__init__()
-        self.width = width
-        self.height = height
         self.training = training
-        self.grid_width = width / params.stride
-        self.grid_height = height / params.stride
 
-        self.conv_1 = Conv2D(32, 6, 6, input_shape=X.shape[1:], dim_ordering='tf', activation='relu')
-        self.pool_1 = MaxPooling2D(pool_size=(params.pool_size, params.pool_size))
-        self.conv_2 = Conv2D(64, params.filter_size, params.filter_size, dim_ordering='tf', activation='relu')
-        self.pool_2 = MaxPooling2D(pool_size=(params.pool_size, params.pool_size))
-        self.conv_3 = Conv2D(128, params.filter_size, params.filter_size, dim_ordering='tf', activation='relu')
+        # conv2D args are filters, kernel_size, ...
+        # filters is number of output channels
+        # channels_last means input is (batch, height, width, channels)
+        self.conv_1 = Conv2D(32, params.grid_stride, strides=2, padding='valid', data_format='channels_last', activation='relu')
+        self.pool_1 = MaxPool2D(pool_size=params.pool_size)
+        self.conv_2 = Conv2D(64, params.kernel_size, strides=params.kernel_size, padding='valid', data_format='channels_last', activation='relu')
+        self.pool_2 = MaxPool2D(pool_size=params.pool_size)
+        self.conv_3 = Conv2D(128, params.kernel_size, strides=params.kernel_size, padding='valid', data_format='channels_last', activation='relu')
         self.dropout = Dropout(0.4)
         self.linear_1 = Dense(256, activation='relu')
-        self.linear_2 = Dense(8) # 4 coordinates, objectness score, 3 class probs
+        self.linear_2 = Dense(params.vec_len) # 4 coordinates, objectness score, 3 class probs
 
         self.anchors = self.create_anchors()
 
@@ -69,7 +66,7 @@ class DetectNet(layers.Layer):
         # x should be (60 x 40 x 16) here
 
         x = predict_transform(x, self.height, self.anchors, params.num_classes, False)
-        # now it should have anchors for (60 x 40 x 2 x 8) or (60 x 40 x 16) or (4800 x 8)
+        # now it should have anchors for (60 x 40 x 16)
 
         # this will filter 4800 boxes down to 1 box per object, output likely (3 x 7) or something
         # 8 to 7 b/c removes class probs for non predicted objects and adds class index for predicted object
@@ -85,19 +82,13 @@ class DetectNet(layers.Layer):
     def create_anchors():
         wide_anchor = tf.constant(0, dtype=tf.float64, shape=(2))
         wide_anchor = tf.Variable(wide_anchor)
-        wide_anchor[0].assign(params.im_width) # width
-        wide_anchor[1].assign(params.im_height / 2) # height
+        wide_anchor[0].assign(1) # width
+        wide_anchor[1].assign(.5) # height
 
         tall_anchor = tf.constant(0, dtype=tf.float64, shape=(2))
         tall_anchor = tf.Variable(tall_anchor)
-        tall_anchor[0].assign(params.im_width / 2) # width
-        tall_anchor[1].assign(params.im_height) # height
-
-        # resize anchors to grid cells
-        wide_anchor[0].assign(wide_anchor[0] / params.stride)
-        wide_anchor[1].assign(wide_anchor[1] / params.stride)
-        tall_anchor[0].assign(tall_anchor[0] / params.stride)
-        tall_anchor[1].assign(tall_anchor[1] / params.stride)
+        tall_anchor[0].assign(.5) # width
+        tall_anchor[1].assign(1) # height
 
         anchors = tf.stack([wide_anchor, tall_anchor])
         anchors = tf.transpose(anchors, perm=[1, 0])
@@ -151,11 +142,11 @@ class DetectNet(layers.Layer):
     # predictions will be (4800 x 8)
     @staticmethod
     def filter_boxes(predictions):
-        predictions = tf.reshape(predictions, [60 * 40 * 2, 8])
+        predictions = tf.reshape(predictions, [60 * 40 * 2, params.vec_len])
         predictions = tf.Variable(predictions)
         conf_mask = tf.Variable(predictions[:,4] > params.object_conf)
         conf_mask = tf.dtypes.cast(conf_mask, tf.double)
-        conf_mask = tf.ones([4800, 8], dtype=tf.double) * tf.expand_dims(conf_mask,1)
+        conf_mask = tf.ones([4800, params.vec_len], dtype=tf.double) * tf.expand_dims(conf_mask,1)
         predictions.assign(predictions * conf_mask) # this should 0 out all 8 box attrs if 4th elem below object threshold
 
         max_ind = tf.math.argmax(predictions[:,5:5+ params.num_classes], axis=1) # get index of max class prob for each box
@@ -263,22 +254,26 @@ class DetectNet(layers.Layer):
         x_y_offset = tf.transpose(x_y_offset, perm=[1,2,0])
 
         prediction[:,:,:2].assign(prediction[:,:,:2] + x_y_offset) # center of first box
-        prediction[:,:,8:10].assign(prediction[:,:,8:10] + x_y_offset) # center of second box
+        prediction[:,:,params.vec_len:params.vec_len + 2].assign(prediction[:,:,params.vec_len:params.vec_len + 2] + x_y_offset) # center of second box
 
         anchors = tf.tile(anchors, [40, 60])
         anchors = tf.reshape(anchors, [40, 60, 4]) # make 2 anchors per bounding box
         # exp to make width and height positive then multiply by anchor dims to resize box to anchor
         prediction[:,:,2:4].assign(tf.math.exp(prediction[:,:,2:4])*anchors[:,:,:2])
-        prediction[:,:,10:12].assign(tf.math.exp(prediction[:,:,10:12])*anchors[:,:,2:4])
+        prediction[:,:,params.vec_len+2:params.vec_len+4].assign(tf.math.exp(prediction[:,:,params.vec_len+2:params.vec_len+4])*anchors[:,:,2:4])
 
         # apply sigmoid to class scores to make them probabilities
         # index 4 and 12 is the object conf score, this isn't being modified here
         prediction[:,:,5: 5 + params.num_classes].assign(tf.math.sigmoid(prediction[:,:, 5 : 5 + params.num_classes]))
-        prediction[:,:,13: 13 + params.num_classes].assign(tf.math.sigmoid(prediction[:,:, 13 : 13 + params.num_classes]))
+        prediction[:,:,15: 15 + params.num_classes].assign(tf.math.sigmoid(prediction[:,:, 15 : 15 + params.num_classes]))
 
         # resize coordinates to size of input image
-        prediction[:,:,:4].assign(prediction[:,:,:4] * params.stride)
-        prediction[:,:,8:12].assign(prediction[:,:,8:12] * params.stride)
+        # center coords for y_ have been passed through sigmoid and had x and y offsets added
+        # the x and y offsets treat grid cells as 1 x 1 boxes, so sigmoid works
+        # need to multiply them by stride to get overall center coords of image
+        # width and height underwent an exp transform and were scaled by their respective anchors
+        prediction[:,:,:4].assign(prediction[:,:,:4] * params.grid_stride)
+        prediction[:,:,params.vec_len:params.vec_len+4].assign(prediction[:,:,params.vec_len:params.vec_len+4] * params.grid_stride)
 
         prediction = tf.convert_to_tensor(prediction, dtype = tf.float64)
 

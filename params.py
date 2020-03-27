@@ -1,19 +1,20 @@
 ########## Hyper Parameters ##################
 batch_size = 16
 epochs = 10
-boxes_per_img = 8
-filter_size = 3
+kernel_size = 3
 pool_size = 2
-stride = 32
+grid_stride = 32 # could also use 40
 object_conf = .6
 nms_conf = .5
 coord_loss_weight = 5
 noobj_loss_weight = .5
+num_anchors = 2
 ##############################################
 
 
 ############ Constants #############
-im_height = 1280
-im_width = 1920
-num_classes = 3
+im_height = 1280 # rows
+im_width = 1920 # columns
+num_classes = 5
+vec_len = 5 + num_classes
 ####################################

@@ -10,28 +10,7 @@ import matplotlib.pyplot as plt
 from detect_net import DetectNet
 import params
 
-def IOU(box1, box2):
-    x_c, y_c, w1, h1 = box1[0], box1[1], box1[2], box1[3]
-    x2_c, y2_c, w2, h2 = box2[0], box2[1], box2[2], box2[3]
-    
-    # get bottom left coordinates
-    x1 = x_c - w1 / 2
-    y1 = y_c - h1 / 2
-    x2 = x2_c - w2 / 2
-    y2 = y2_c - h2 / 2
-
-    w_I = min(x1 + w1, x2 + w2) - max(x1, x2)
-    h_I = min(y1 + h1, y2 + h2) - max(y1, y2)
-
-    if w_I <= 0 or h_I <= 0:  # no overlap
-        return 0
-    I = w_I * h_I
-
-    U = w1 * h1 + w2 * h2 - I
-
-    return I / U
-
-
+# may want to resize image and normalize each pixel to be between 0 and 1
 def read_tfrecord(example):
     frame = open_dataset.Frame()
     frame.ParseFromString(bytearray(example.numpy()))
@@ -56,10 +35,10 @@ def read_tfrecord(example):
             front_image = image
 
     num_objects = len(front_labels.labels)
-    true_boxes = np.zeros(num_objects, 7)
+    true_boxes = np.zeros(num_objects, params.vec_len)
     for i in range(num_objects):
         label = front_labels.labels[i]
-        box_vector = np.zeros((8, 1))
+        box_vector = np.zeros((params.vec_len, 1))
         box_vector[0] = label.box.center_x
         box_vector[1] = label.box.center_y
         box_vector[2] = label.box.width
@@ -69,8 +48,12 @@ def read_tfrecord(example):
             box_vector[5] = 1
         elif label.type == 'TYPE_VEHICLE':
             box_vector[6] = 1
-        else:
+        elif label.type == 'TYPE_CYCLIST':
             box_vector[7] = 1
+        elif label.type == 'TYPE_SIGN':
+            box_vector[8] = 1
+        else:
+            box_vector[9] = 1
         true_boxes[i] = box_vector
     
     #train_boxes = create_boxes()
@@ -82,80 +65,86 @@ def read_tfrecord(example):
 # for cells with no object penalize classification score using SSE
 # for boxes in grid cell that aren't responsible for object (only 1 if 2 anchor boxes) do SSE on object confidence score
 # sum losses for all grid cells
-def loss(model, x, y, training, loss_object):
+def loss(model, x, y, training):
     # training=training is needed only if there are layers with different
     # behavior during training versus inference (e.g. Dropout).
     y_, _ = model(x, training=training)
-    num_boxes_cell = y_.shape()[2]
+    y_ = y_.numpy()
+    y = y.numpy()    
     total_loss = 0
-    for i in range(y_.shape()[0]): # rows
-        for j in range(y_.shape()[1]): # columns
-            objs_in_cell = []
-            idxs = []
-            idx = 0
-            for obj in y: # get true objects in current grid cell
-                cell_x = obj[0] / params.stride
-                cell_y = obj[1] / params.stride
-                if cell_x == i and cell_y == j:
-                    objs_in_cell.append(obj)
-                    idxs.append(idx)
-                idx += 1
 
-            if objs_in_cell:
-                highest_iou = -1
-                num_objs_cell = len(objs_in_cell)
-                iou_arr = np.zeros(1, num_objs_cell)
-                for b in range(num_boxes_cell): # find predicted box with highest iou with obj in current cell
-                    pred_vec = y_[i, j, b]
-                    ious = DetectNet.bbox_iou(pred_vec, objs_in_cell) # iou of b with all objs
-                    if iou_arr.shape()[0] == 1:
-                        iou_arr[0] = ious
-                    else:
-                        iou_arr = np.vstack([iou_arr, ious]) # make ious into row if not already
+    for i in range(params.batch_size):
+        for j in range(y_.shape[1]): # rows
+            for k in range(y_.shape[2]): # columns
+                objs_in_cell = []
+                for obj in y[i]: # get true objects in current grid cell
+                    cell_x = obj[0] // params.grid_stride
+                    cell_y = obj[1] // params.grid_stride
+                    if cell_x == j and cell_y == k:
+                        objs_in_cell.append(obj)
 
-                # while list size < num_boxes, get max over all rows, if row index of max not in list append to list, make max 0 in iou_arr
-                # pick unique bounding box for each true object
-                pred_to_obj = {}
-                obj_to_pred = {}
-                while len(pred_to_obj) < min(num_boxes_cell, num_objs_cell):
-                    max_ = np.amax(iou_arr)
-                    result = numpy.where(iou_arr == max_)
-                    cord_list = list(zip(result[0], result[1]))
-                    for cord in cord_list:
-                        if cord[0] not in pred_to_obj and cord[1] not in obj_to_pred:
-                            pred_to_obj[cord[0]] = cord[1]
-                            obj_to_pred[cord[1]] = cord[0]
-                            iou_arr[cord[0], cord[1]] = -1
+                if objs_in_cell:
+                    highest_iou = -1
+                    num_objs_cell = len(objs_in_cell)
+                    # iou_arr contains the ious between each box in cell and all objects in cell
+                    iou_arr = np.zeros((num_objs_cell, params.num_anchors))
+                    for b in range(params.num_anchors): # find predicted box with highest iou with obj in current cell
+                        start_ind = b * params.vec_len
+                        end_ind = start_ind + params.vec_len
+                        pred_vec = y_[i, j, k, start_ind:end_ind]
+                        ious = DetectNet.bbox_iou(pred_vec, objs_in_cell) # iou of b with all objs
+                        iou_arr[:,b] = ious.numpy()
 
-                # if cell contains object(s), only calculate coordinate and class prob loss for box resp for each object
-                for b in pred_to_obj:
-                    pred_vec = y_[i, j, b]
-                    true_vec = y[pred_to_obj[b]]
-                    # need to ensure coordinates for pred vec are absolute over entire image
-                    center_sse = (true_vec[0] - pred_vec[0])^2 + (true_vec[1] - pred_vec[1])^2
-                    total_loss += params.coord_loss_weight * center_sse
+                    # while list size < num_boxes, get max over all rows, if row index of max not in list append to list, make max 0 in iou_arr
+                    # pick unique bounding box for each true object
+                    pred_to_obj = {}
+                    obj_to_pred = {}
+                    while len(pred_to_obj) < min(params.num_anchors, num_objs_cell):                        
+                        max_ = np.amax(iou_arr) # returns max val
+                        result = np.where(iou_arr == max_) # finds index(s) of max val
+                        # result[0] has true obj(row) index, result[1] one has col(box) of max val, just get first elem if tie
+                        max_obj, max_b = list(zip(result[0], result[1]))[0]
+                        if max_b not in pred_to_obj and max_obj not in obj_to_pred:
+                            pred_to_obj[max_b] = max_obj
+                            obj_to_pred[max_obj] = max_b
+                            iou_arr[:,max_b] = -1 # so this box won't be selected again
 
-                    wh_sse = (true_vec[2] - pred_vec[2])^2 + (true_vec[3] - pred_vec[3])^2
-                    total_loss = params.coord_loss_weight * wh_sse
+                    # if cell contains object(s), only calculate coordinate and class prob loss for box resp for each object
+                    for b in pred_to_obj:
+                        start_ind = b * params.vec_len
+                        end_ind = start_ind + params.vec_len
+                        pred_vec = y_[i, j, k, start_ind:end_ind]
+                        true_vec = y[i, pred_to_obj[b]]
+                        # need to ensure coordinates for pred vec are absolute over entire image
+                        center_sse = (true_vec[0] - pred_vec[0])**2 + (true_vec[1] - pred_vec[1])**2
+                        total_loss += params.coord_loss_weight * center_sse
 
-                    c_idx = 5
-                    class_sse = 0
-                    # YOLO paper only does 1 set of class probs per cell, not per bounding box
-                    # may need to adjust this
-                    for c in range(params.num_classes):
-                        class_sse += (true_vec[c_idx + c] - pred_vec[c_idx + c])^2
-                    total_loss += class_sse
+                        wh_sse = (true_vec[2] - pred_vec[2])**2 + (true_vec[3] - pred_vec[3])**2
+                        total_loss = params.coord_loss_weight * wh_sse
 
-                    obj_conf_sse = (1 - pred_vec[4])^2 + (1 - pred_vec[4])^2
-                    total_loss += obj_conf_sse
+                        c_idx = 5
+                        class_sse = 0
+                        # YOLO paper only does 1 set of class probs per cell, not per bounding box
+                        # may need to adjust this
+                        for c in range(c_idx, c_idx + params.num_classes):
+                            class_sse += (true_vec[c] - pred_vec[c])**2
+                        total_loss += class_sse
 
-            # if no object in cell, only calculate loss on the object confidence for each box in cell
-            else:
-                for b in range(num_boxes_cell):
-                    pred_vec = y_[i, j, b]
-                    obj_conf_sse = (1 - pred_vec[4])^2 + (1 - pred_vec[4])^2
-                    obj_conf_sse = params.noobj_loss_weight * obj_conf_sse
-                    total_loss += obj_conf_sse
+                        obj_conf_sse = (1 - pred_vec[4])**2
+                        total_loss += obj_conf_sse
+
+                    # can also do classification error for box not used if there is one
+                    # YOLO paper only does 1 set of class probs per cell
+
+                # if no object in cell, only calculate loss on the object confidence for each box in cell
+                else:
+                    for b in range(params.num_anchors):
+                        start_ind = b * params.vec_len
+                        end_ind = start_ind + params.vec_len
+                        pred_vec = y_[i, j, k, start_ind:end_ind]
+                        obj_conf_sse = (1 - pred_vec[4])**2
+                        obj_conf_sse = params.noobj_loss_weight * obj_conf_sse
+                        total_loss += obj_conf_sse
 
     return total_loss
 
@@ -164,6 +153,10 @@ def grad(model, inputs, targets):
     with tf.GradientTape() as tape:
         loss_value = loss(model, inputs, targets, training=True)
     return loss_value, tape.gradient(loss_value, model.trainable_variables)
+
+
+def comp_nms_gt(nms_boxes, gt_boxes):
+    pass
 
 
 # each object in training image is assigned to grid cell that contains object's midpoint
@@ -188,10 +181,17 @@ def train():
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
 
+    # to get validation stats need to do nms during training also, return result of nms in addition to all boxes
+    # then check iou of each nms box with each ground truth from val set, if above threshold compare classification, use comp_nms_gt()
     for epoch in range(params.epochs):
         for x, y, img in dataset:
             loss_value, grads = grad(model, x, y)
             optimizer.apply_gradients(zip(grads, model.trainable_variables))
+
+
+# don't call grad and loss here, just get nms from model and pass to comp_nms_gt()
+def test():
+    pass
 
 
 def print_results(model, dataset):
