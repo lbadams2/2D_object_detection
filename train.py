@@ -10,56 +10,6 @@ import matplotlib.pyplot as plt
 from detect_net import DetectNet
 import params
 
-# may want to resize image and normalize each pixel to be between 0 and 1
-def read_tfrecord(example):
-    frame = open_dataset.Frame()
-    frame.ParseFromString(bytearray(example.numpy()))
-    # each frame consists of 5 different camera images
-    #front_image = None
-    #for index, image in enumerate(frame.images):
-    #    if image.name == 1: # 1 is front image
-    #        front_image = image
-    #    break
-    front_labels = None
-    front_image = None
-    for camera_labels in frame.camera_labels:
-        if camera_labels.name != 1: # only take front camera images
-            continue
-        else:
-            front_labels = camera_labels
-            break
-    for image in frame.images:
-        if image.name != 1:
-            continue
-        else:
-            front_image = image
-
-    num_objects = len(front_labels.labels)
-    true_boxes = np.zeros(num_objects, params.vec_len)
-    for i in range(num_objects):
-        label = front_labels.labels[i]
-        box_vector = np.zeros((params.vec_len, 1))
-        box_vector[0] = label.box.center_x
-        box_vector[1] = label.box.center_y
-        box_vector[2] = label.box.width
-        box_vector[3] = label.box.length
-        box_vector[4] = 1 # objectness score
-        if label.type == 'TYPE_PEDESTRIAN':
-            box_vector[5] = 1
-        elif label.type == 'TYPE_VEHICLE':
-            box_vector[6] = 1
-        elif label.type == 'TYPE_CYCLIST':
-            box_vector[7] = 1
-        elif label.type == 'TYPE_SIGN':
-            box_vector[8] = 1
-        else:
-            box_vector[9] = 1
-        true_boxes[i] = box_vector
-    
-    #train_boxes = create_boxes()
-    return true_boxes, front_image
-
-
 # only penalize classification grid cell using SSE
 # only penalize coordinate loss if object present in grid cell and box responsible for that object
 # for cells with no object penalize classification score using SSE
@@ -164,18 +114,17 @@ def comp_nms_gt(nms_boxes, gt_boxes):
 # each object in training image is assigned to grid cell that contains object's midpoint
 # and anchor box for the grid cell with highest IOU
 def train():
-    FILENAME = 'data/train/segment-1005081002024129653_5313_150_5333_150_with_camera_labels.tfrecord'
+    FILENAME = 'image_dataset_train.tfrecord'
     dataset = tf.data.TFRecordDataset(FILENAME, compression_type='')
-    dataset.map(read_tfrecord, num_parallel_calls=AUTO)
     dataset.batch(params.batch_size)
-    total_train = len(dataset)
-    num_imgs = total_train
 
+    '''
     VAL_FILENAME = 'data/validation/segment-272435602399417322_2884_130_2904_130_with_camera_labels.tfrecord'
     val_dataset = tf.data.TFRecordDataset(VAL_FILENAME, compression_type='')
     val_dataset.batch(params.batch_size)
     total_val = len(val_dataset)
-    
+    '''
+
     model = DetectNet(params.im_width, params.im_height)
     #model.compile(optimizer='adam',
     #              loss = 'mse',
@@ -186,7 +135,7 @@ def train():
     # to get validation stats need to do nms during training also, return result of nms in addition to all boxes
     # then check iou of each nms box with each ground truth from val set, if above threshold compare classification, use comp_nms_gt()
     for epoch in range(params.epochs):
-        for x, y, img in dataset:
+        for x, y in dataset:
             loss_value, grads = grad(model, x, y)
             optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
