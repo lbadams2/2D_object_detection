@@ -45,7 +45,7 @@ class DetectNet(layers.Layer):
         self.dropout = Dropout(0.4)
         self.linear_1 = Dense(256, activation='relu')
         self.linear_2 = Dense(params.vec_len) # 4 coordinates, objectness score, 3 class probs
-
+        # output here should be (batch_sz, height/grid_stride, width/grid_stride, num_anchors * vec_len)
         self.anchors = self.create_anchors()
 
     # img should be np image array (1920 x 1280 x 3)

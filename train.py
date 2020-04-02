@@ -1,8 +1,3 @@
-from waymo_open_dataset.utils import range_image_utils
-from waymo_open_dataset.utils import transform_utils
-from waymo_open_dataset.utils import  frame_utils
-from waymo_open_dataset import dataset_pb2 as open_dataset
-
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
@@ -19,8 +14,6 @@ def loss(model, x, y, training):
     # training=training is needed only if there are layers with different
     # behavior during training versus inference (e.g. Dropout).
     y_, _ = model(x, training=training)
-    y_ = y_.numpy()
-    y = y.numpy()    
     total_loss = 0
 
     for i in range(params.batch_size):
@@ -111,11 +104,27 @@ def comp_nms_gt(nms_boxes, gt_boxes):
     pass
 
 
+def _parse_image_function(example):
+    # Create a dictionary describing the features.
+    context_feature = {
+        'image': tf.io.FixedLenFeature([], dtype=tf.string)
+    }
+    sequence_features = {
+        'Box Vectors': tf.io.VarLenFeature(dtype=tf.float32)
+    }
+    context_data, sequence_data = tf.io.parse_single_sequence_example(serialized=example, 
+                                    context_features=context_feature, sequence_features=sequence_features)
+
+    # Parse the input tf.Example proto using the dictionary above.
+    return context_data, sequence_data
+
+
 # each object in training image is assigned to grid cell that contains object's midpoint
 # and anchor box for the grid cell with highest IOU
 def train():
     FILENAME = 'image_dataset_train.tfrecord'
     dataset = tf.data.TFRecordDataset(FILENAME, compression_type='')
+    dataset = dataset.map(_parse_image_function)
     dataset.batch(params.batch_size)
 
     '''
@@ -125,7 +134,7 @@ def train():
     total_val = len(val_dataset)
     '''
 
-    model = DetectNet(params.im_width, params.im_height)
+    model = DetectNet(True)
     #model.compile(optimizer='adam',
     #              loss = 'mse',
     #              metrics=['accuracy'])
