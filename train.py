@@ -115,15 +115,36 @@ def _parse_image_function(example):
     context_data, sequence_data = tf.io.parse_single_sequence_example(serialized=example, 
                                     context_features=context_feature, sequence_features=sequence_features)
 
+    #image = tf.io.decode_raw(context_feature['image'], tf.string)
+    #image = tf.reshape(image, [])
+    #image = tf.io.parse_tensor(context_feature['image'], out_type = float)
+
+    #print('********* printing image **************')
+    #print(image)
+    #print('******************** **************')
+    #image = tf.reshape(image, [])
     # Parse the input tf.Example proto using the dictionary above.
+    #img = tf.image.decode_jpeg(image)
+    # Use `convert_image_dtype` to convert to floats in the [0,1] range.
+    #img = tf.image.convert_image_dtype(img, tf.float32)
+    #tf.image.resize(img, [IMG_WIDTH, IMG_HEIGHT])
     return context_data, sequence_data
 
+
+def format_data(image, labels):
+    vecs = labels['Box Vectors']
+    image = image['image']
+    image = tf.reshape(image, [])
+    #print(image)
+    image = tf.image.decode_jpeg(image)
+    vecs = tf.sparse.to_dense(vecs)
+    return image, vecs
 
 # each object in training image is assigned to grid cell that contains object's midpoint
 # and anchor box for the grid cell with highest IOU
 def train():
     FILENAME = 'image_dataset_train.tfrecord'
-    dataset = tf.data.TFRecordDataset(FILENAME, compression_type='')
+    dataset = tf.data.TFRecordDataset(FILENAME)
     dataset = dataset.map(_parse_image_function)
     dataset.batch(params.batch_size)
 
@@ -145,7 +166,8 @@ def train():
     # then check iou of each nms box with each ground truth from val set, if above threshold compare classification, use comp_nms_gt()
     for epoch in range(params.epochs):
         for x, y in dataset:
-            loss_value, grads = grad(model, x, y)
+            image, vecs = format_data(x, y)
+            loss_value, grads = grad(model, image, vecs)
             optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
 
