@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 
 from detect_net import DetectNet
 import params
+from create_dataset import draw_orig_image
 
 # only penalize classification grid cell using SSE
 # only penalize coordinate loss if object present in grid cell and box responsible for that object
@@ -30,7 +31,7 @@ def loss(model, x, y, training):
                     highest_iou = -1
                     num_objs_cell = len(objs_in_cell)
                     # iou_arr contains the ious between each box in cell and all objects in cell
-                    iou_arr = tf.zeros([num_objs_cell, params.num_anchors], tf.float64)
+                    iou_arr = tf.zeros([num_objs_cell, params.num_anchors], tf.float32)
                     iou_arr = tf.Variable(iou_arr)
                     for b in range(params.num_anchors): # find predicted box with highest iou with obj in current cell
                         start_ind = b * params.vec_len
@@ -51,7 +52,7 @@ def loss(model, x, y, training):
                         if max_b not in pred_to_obj and max_obj not in obj_to_pred:
                             pred_to_obj[max_b] = max_obj
                             obj_to_pred[max_obj] = max_b
-                            bc = tf.constant(-1, shape=[num_objs_cell], dtype=tf.float64)
+                            bc = tf.constant(-1, shape=[num_objs_cell], dtype=tf.float32)
                             iou_arr[:,max_b].assign(bc) # so this box won't be selected again
 
                     # if cell contains object(s), only calculate coordinate and class prob loss for box resp for each object
@@ -151,12 +152,13 @@ def train():
 
     # to get validation stats need to do nms during training also, return result of nms in addition to all boxes
     # then check iou of each nms box with each ground truth from val set, if above threshold compare classification, use comp_nms_gt()
-    for epoch in range(params.epochs):
-        for x, y in dataset:
-            #print(x)
-            #print(y)
-            loss_value, grads = grad(model, x, y)
-            optimizer.apply_gradients(zip(grads, model.trainable_variables))
+    #for epoch in range(params.epochs):
+    for x, y in dataset:
+        #print(x)
+        #print(y)
+        loss_value, grads = grad(model, x, y)
+        print('train loss is ', loss_value)
+        optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
 
 # don't call grad and loss here, just get nms from model and pass to comp_nms_gt()

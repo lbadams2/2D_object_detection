@@ -42,50 +42,60 @@ class DetectNet(layers.Layer):
         self.conv_2 = Conv2D(64, params.kernel_size, strides=params.kernel_size, padding='valid', data_format='channels_last', activation='relu')
         self.pool_2 = MaxPool2D(pool_size=params.pool_size)
         self.conv_3 = Conv2D(128, params.kernel_size, strides=params.kernel_size, padding='valid', data_format='channels_last', activation='relu')
+        self.flatten_layer = Flatten()
         self.dropout = Dropout(0.4)
-        self.linear_1 = Dense(256, activation='relu')
-        self.linear_2 = Dense(params.vec_len) # 4 coordinates, objectness score, 3 class probs
+        self.linear_1 = Dense(40 * 60 * params.vec_len * 2, activation='relu')
+        #self.linear_2 = Dense(params.vec_len) # 4 coordinates, objectness score, 3 class probs
         # output here should be (batch_sz, height/grid_stride, width/grid_stride, num_anchors * vec_len)
         self.anchors = self.create_anchors()
+        self.anchors_grid = tf.tile(self.anchors, [40, 60])
+        self.anchors_grid = tf.reshape(self.anchors_grid, [40, 60, 4]) # make 2 anchors per bounding box
+
 
     # img should be np image array (1920 x 1280 x 3)
     def call(self, img):
-        x = self.conv_1(img)
+        x = self.conv_1(img) # x is (16, 625, 945, 32) get_new_dim correct
         #x = tf.nn.relu(x)
-        x = self.pool_1(x)
-        x = self.conv_2(x)
+        x = self.pool_1(x) # x is (16, 312, 472, 32) get_new_dim correct
+        x = self.conv_2(x) # x is (16, 104, 157, 64) get_new_dim correct
         #x = tf.nn.relu(x)
-        x = self.pool_2(x)
-        x = self.conv_3(x)
+        x = self.pool_2(x) # x is (16, 52, 78, 64) correct
+        x = self.conv_3(x) # x is (16, 17, 26, 128)
         #x = tf.nn.relu(x)        
-        x = Flatten(x)
+        x = self.flatten_layer(x) # x is (16, 56576) here
         x = self.dropout(x)
         x = self.linear_1(x)
-        x = self.dropout(x)
-        x = self.linear_2(x)
-        # x should be (60 x 40 x 16) here
+        #x = self.dropout(x)
+        #x = self.linear_2(x)
+        x = tf.reshape(x, [params.batch_size, 40, 60, params.vec_len * 2])
+        # x should be (batch_sz, 60 x 40 x 16) here
 
-        x = predict_transform(x, self.height, self.anchors, params.num_classes, False)
+        x = DetectNet.predict_transform(x, self.anchors_grid)
         # now it should have anchors for (60 x 40 x 16)
 
         # this will filter 4800 boxes down to 1 box per object, output likely (3 x 7) or something
         # 8 to 7 b/c removes class probs for non predicted objects and adds class index for predicted object
         pred_idxs = None
         if not self.training:
-            pred_idxs = filter_boxes(x)
+            pred_idxs = DetectNet.filter_boxes(x)
         return x, pred_idxs
 
+
+    @staticmethod
+    def get_new_dim(input_dim, kern_sz, pdng, strd):
+        new_dim = int((input_dim - kern_sz + 2*pdng) / strd) + 1
+        return new_dim
     
     # 1 wide and 1 tall anchor box for each grid cell, normalize dims to fit in grid cell
     # not sure if grid cells should be 1 x 1 or (img_width / stride x img_height / stride)
     @staticmethod
     def create_anchors():
-        wide_anchor = tf.constant(0, dtype=tf.float64, shape=(2))
+        wide_anchor = tf.constant(0, dtype=tf.float32, shape=(2))
         wide_anchor = tf.Variable(wide_anchor)
         wide_anchor[0].assign(1) # width
         wide_anchor[1].assign(.5) # height
 
-        tall_anchor = tf.constant(0, dtype=tf.float64, shape=(2))
+        tall_anchor = tf.constant(0, dtype=tf.float32, shape=(2))
         tall_anchor = tf.Variable(tall_anchor)
         tall_anchor[0].assign(.5) # width
         tall_anchor[1].assign(1) # height
@@ -226,55 +236,63 @@ class DetectNet(layers.Layer):
     # this applies sigmoids and exponential function to some dims to make them between 0 and 1 or positive
     # also scales bounding boxes by anchor box dims
     @staticmethod
-    def predict_transform(prediction, anchors):
-        grid_size_x = prediction.shape[1]
-        grid_size_y = prediction.shape[0]
-        # has to be variable to do assignment, need to make sure all gradient data is preserved
-        # when converting from tensor to variable and vice versa
-        prediction = tf.Variable(prediction)
+    def predict_transform(prediction_batch, anchors_grid):
+        transformed_preds = None
+        num_preds = prediction_batch.shape[0]
+        
+        for i in range(num_preds):
+            prediction = prediction_batch[i]
+            grid_size_x = prediction.shape[1]
+            grid_size_y = prediction.shape[0]
+            # has to be variable to do assignment, need to make sure all gradient data is preserved
+            # when converting from tensor to variable and vice versa
+            prediction = tf.Variable(prediction)
 
-        # makes the x_center coordinate between 0 and 1, each grid cell is normalized to 1 x 1
-        prediction[:,:,0].assign(tf.math.sigmoid(prediction[:,:,0]))
-        # makes the y_center coordinate between 0 and 1, each grid cell is normalized to 1 x 1
-        prediction[:,:,1].assign(tf.math.sigmoid(prediction[:,:,1]))
-        # makes the objectness score a probability between 0 and 1
-        prediction[:,:,4].assign(tf.math.sigmoid(prediction[:,:,4]))
+            # makes the x_center coordinate between 0 and 1, each grid cell is normalized to 1 x 1
+            prediction[:,:,0].assign(tf.math.sigmoid(prediction[:,:,0]))
+            # makes the y_center coordinate between 0 and 1, each grid cell is normalized to 1 x 1
+            prediction[:,:,1].assign(tf.math.sigmoid(prediction[:,:,1]))
+            # makes the objectness score a probability between 0 and 1
+            prediction[:,:,4].assign(tf.math.sigmoid(prediction[:,:,4]))
 
-        # np.arrange creates an array of ints from 0 to grid_size - 1
-        grid_x = np.arange(grid_size_x)
-        grid_y = np.arange(grid_size_y)
-        # a contains 40 rows of x-offsets, each row identical counting up to 60
-        # b contains 40 rows of y-offsets, first row 60 0's, second 60 1's, and so on
-        a,b = np.meshgrid(grid_x, grid_y)
-        x_offset = tf.constant(a, dtype=tf.float64)
-        y_offset = tf.constant(b, dtype=tf.float64)
+            # np.arrange creates an array of ints from 0 to grid_size - 1
+            grid_x = np.arange(grid_size_x)
+            grid_y = np.arange(grid_size_y)
+            # a contains 40 rows of x-offsets, each row identical counting up to 60
+            # b contains 40 rows of y-offsets, first row 60 0's, second 60 1's, and so on
+            a,b = np.meshgrid(grid_x, grid_y)
+            x_offset = tf.constant(a, dtype=tf.float32)
+            y_offset = tf.constant(b, dtype=tf.float32)
 
-        # concatenates the grids horizontally
-        x_y_offset = tf.stack([x_offset, y_offset])
-        x_y_offset = tf.transpose(x_y_offset, perm=[1,2,0])
+            # concatenates the grids horizontally
+            x_y_offset = tf.stack([x_offset, y_offset])
+            x_y_offset = tf.transpose(x_y_offset, perm=[1,2,0])
 
-        prediction[:,:,:2].assign(prediction[:,:,:2] + x_y_offset) # center of first box
-        prediction[:,:,params.vec_len:params.vec_len + 2].assign(prediction[:,:,params.vec_len:params.vec_len + 2] + x_y_offset) # center of second box
+            prediction[:,:,:2].assign(prediction[:,:,:2] + x_y_offset) # center of first box
+            prediction[:,:,params.vec_len:params.vec_len + 2].assign(prediction[:,:,params.vec_len:params.vec_len + 2] + x_y_offset) # center of second box
+            
+            # exp to make width and height positive then multiply by anchor dims to resize box to anchor
+            prediction[:,:,2:4].assign(tf.math.exp(prediction[:,:,2:4])*anchors_grid[:,:,:2])
+            prediction[:,:,params.vec_len+2:params.vec_len+4].assign(tf.math.exp(prediction[:,:,params.vec_len+2:params.vec_len+4])*anchors_grid[:,:,2:4])
 
-        anchors = tf.tile(anchors, [40, 60])
-        anchors = tf.reshape(anchors, [40, 60, 4]) # make 2 anchors per bounding box
-        # exp to make width and height positive then multiply by anchor dims to resize box to anchor
-        prediction[:,:,2:4].assign(tf.math.exp(prediction[:,:,2:4])*anchors[:,:,:2])
-        prediction[:,:,params.vec_len+2:params.vec_len+4].assign(tf.math.exp(prediction[:,:,params.vec_len+2:params.vec_len+4])*anchors[:,:,2:4])
+            # apply sigmoid to class scores to make them probabilities
+            # index 4 and 12 is the object conf score, this isn't being modified here
+            prediction[:,:,5: 5 + params.num_classes].assign(tf.math.sigmoid(prediction[:,:, 5 : 5 + params.num_classes]))
+            prediction[:,:,15: 15 + params.num_classes].assign(tf.math.sigmoid(prediction[:,:, 15 : 15 + params.num_classes]))
 
-        # apply sigmoid to class scores to make them probabilities
-        # index 4 and 12 is the object conf score, this isn't being modified here
-        prediction[:,:,5: 5 + params.num_classes].assign(tf.math.sigmoid(prediction[:,:, 5 : 5 + params.num_classes]))
-        prediction[:,:,15: 15 + params.num_classes].assign(tf.math.sigmoid(prediction[:,:, 15 : 15 + params.num_classes]))
+            # resize coordinates to size of input image
+            # center coords for y_ have been passed through sigmoid and had x and y offsets added
+            # the x and y offsets treat grid cells as 1 x 1 boxes, so sigmoid works
+            # need to multiply them by stride to get overall center coords of image
+            # width and height underwent an exp transform and were scaled by their respective anchors
+            prediction[:,:,:4].assign(prediction[:,:,:4] * params.grid_stride)
+            prediction[:,:,params.vec_len:params.vec_len+4].assign(prediction[:,:,params.vec_len:params.vec_len+4] * params.grid_stride)
 
-        # resize coordinates to size of input image
-        # center coords for y_ have been passed through sigmoid and had x and y offsets added
-        # the x and y offsets treat grid cells as 1 x 1 boxes, so sigmoid works
-        # need to multiply them by stride to get overall center coords of image
-        # width and height underwent an exp transform and were scaled by their respective anchors
-        prediction[:,:,:4].assign(prediction[:,:,:4] * params.grid_stride)
-        prediction[:,:,params.vec_len:params.vec_len+4].assign(prediction[:,:,params.vec_len:params.vec_len+4] * params.grid_stride)
+            prediction = tf.convert_to_tensor(prediction, dtype = tf.float32)
+            if transformed_preds is None:
+                transformed_preds = prediction
+            else:
+                transformed_preds = tf.concat([transformed_preds, prediction], 0)
 
-        prediction = tf.convert_to_tensor(prediction, dtype = tf.float64)
-
-        return prediction
+        transformed_preds = tf.reshape(transformed_preds, [num_preds, 40, 60, params.vec_len * 2])
+        return transformed_preds
