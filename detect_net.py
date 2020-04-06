@@ -46,10 +46,8 @@ class DetectNet(layers.Layer):
         self.dropout = Dropout(0.4)
         self.linear_1 = Dense(40 * 60 * params.vec_len * 2, activation='relu')
         #self.linear_2 = Dense(params.vec_len) # 4 coordinates, objectness score, 3 class probs
-        # output here should be (batch_sz, height/grid_stride, width/grid_stride, num_anchors * vec_len)
-        self.anchors = self.create_anchors()
-        self.anchors_grid = tf.tile(self.anchors, [40, 60])
-        self.anchors_grid = tf.reshape(self.anchors_grid, [40, 60, 4]) # make 2 anchors per bounding box
+        # output here should be (batch_sz, height/grid_stride, width/grid_stride, num_anchors * vec_len
+
 
 
     # img should be np image array (1920 x 1280 x 3)
@@ -70,7 +68,7 @@ class DetectNet(layers.Layer):
         x = tf.reshape(x, [params.batch_size, 40, 60, params.vec_len * 2])
         # x should be (batch_sz, 60 x 40 x 16) here
 
-        x = DetectNet.predict_transform(x, self.anchors_grid)
+        #x = DetectNet.predict_transform(x, self.anchors_grid)
         # now it should have anchors for (60 x 40 x 16)
 
         # this will filter 4800 boxes down to 1 box per object, output likely (3 x 7) or something
@@ -236,63 +234,73 @@ class DetectNet(layers.Layer):
     # this applies sigmoids and exponential function to some dims to make them between 0 and 1 or positive
     # also scales bounding boxes by anchor box dims
     @staticmethod
-    def predict_transform(prediction_batch, anchors_grid):
-        transformed_preds = None
-        num_preds = prediction_batch.shape[0]
+    def predict_transform(predictions):
+        anchors = DetectNet.create_anchors()
         
-        for i in range(num_preds):
-            prediction = prediction_batch[i]
-            grid_size_x = prediction.shape[1]
-            grid_size_y = prediction.shape[0]
-            # has to be variable to do assignment, need to make sure all gradient data is preserved
-            # when converting from tensor to variable and vice versa
-            prediction = tf.Variable(prediction)
+        grid_size_x = predictions.shape[2]
+        grid_size_y = predictions.shape[1]
 
-            # makes the x_center coordinate between 0 and 1, each grid cell is normalized to 1 x 1
-            prediction[:,:,0].assign(tf.math.sigmoid(prediction[:,:,0]))
-            # makes the y_center coordinate between 0 and 1, each grid cell is normalized to 1 x 1
-            prediction[:,:,1].assign(tf.math.sigmoid(prediction[:,:,1]))
-            # makes the objectness score a probability between 0 and 1
-            prediction[:,:,4].assign(tf.math.sigmoid(prediction[:,:,4]))
+        # makes the x_center coordinate between 0 and 1, each grid cell is normalized to 1 x 1
+        b1_center_coords = tf.math.sigmoid(predictions[:,:,:,:2])
+        b2_center_coords = tf.math.sigmoid(predictions[:,:,:,10:12])
+        # makes the y_center coordinate between 0 and 1, each grid cell is normalized to 1 x 1
+        #y_centers = tf.math.sigmoid(predictions[:,:,:,1])
+        # makes the objectness score a probability between 0 and 1
+        b1_obj_scores = tf.math.sigmoid(predictions[:,:,:,4])
+        b2_obj_scores = tf.math.sigmoid(predictions[:,:,:,14])
 
-            # np.arrange creates an array of ints from 0 to grid_size - 1
-            grid_x = np.arange(grid_size_x)
-            grid_y = np.arange(grid_size_y)
-            # a contains 40 rows of x-offsets, each row identical counting up to 60
-            # b contains 40 rows of y-offsets, first row 60 0's, second 60 1's, and so on
-            a,b = np.meshgrid(grid_x, grid_y)
-            x_offset = tf.constant(a, dtype=tf.float32)
-            y_offset = tf.constant(b, dtype=tf.float32)
+        # np.arrange creates an array of ints from 0 to grid_size - 1
+        grid_x = np.arange(grid_size_x)
+        grid_y = np.arange(grid_size_y)
+        # a contains 40 rows of x-offsets, each row identical counting up to 60
+        # b contains 40 rows of y-offsets, first row 60 0's, second 60 1's, and so on
+        a,b = np.meshgrid(grid_x, grid_y)
+        x_offset = tf.constant(a, dtype=tf.float32)
+        y_offset = tf.constant(b, dtype=tf.float32)
 
-            # concatenates the grids horizontally
-            x_y_offset = tf.stack([x_offset, y_offset])
-            x_y_offset = tf.transpose(x_y_offset, perm=[1,2,0])
+        # concatenates the grids horizontally
+        x_y_offset = tf.stack([x_offset, y_offset])
+        x_y_offset = tf.transpose(x_y_offset, perm=[1,2,0])
 
-            prediction[:,:,:2].assign(prediction[:,:,:2] + x_y_offset) # center of first box
-            prediction[:,:,params.vec_len:params.vec_len + 2].assign(prediction[:,:,params.vec_len:params.vec_len + 2] + x_y_offset) # center of second box
-            
-            # exp to make width and height positive then multiply by anchor dims to resize box to anchor
-            prediction[:,:,2:4].assign(tf.math.exp(prediction[:,:,2:4])*anchors_grid[:,:,:2])
-            prediction[:,:,params.vec_len+2:params.vec_len+4].assign(tf.math.exp(prediction[:,:,params.vec_len+2:params.vec_len+4])*anchors_grid[:,:,2:4])
+        b1_center_coords = b1_center_coords + x_y_offset # center of first box
+        b2_center_coords = b2_center_coords + x_y_offset
 
-            # apply sigmoid to class scores to make them probabilities
-            # index 4 and 12 is the object conf score, this isn't being modified here
-            prediction[:,:,5: 5 + params.num_classes].assign(tf.math.sigmoid(prediction[:,:, 5 : 5 + params.num_classes]))
-            prediction[:,:,15: 15 + params.num_classes].assign(tf.math.sigmoid(prediction[:,:, 15 : 15 + params.num_classes]))
+        anchors = tf.tile(anchors, [40, 60])
+        anchors = tf.reshape(anchors, [40, 60, 4]) # make 2 anchors per bounding box
+        # exp to make width and height positive then multiply by anchor dims to resize box to anchor
+        b1_wh_coords = tf.math.exp(predictions[:,:,:,2:4])*anchors[:,:,:2]
+        b2_wh_coords = tf.math.exp(predictions[:,:,:,12:14])*anchors[:,:,2:4]
 
-            # resize coordinates to size of input image
-            # center coords for y_ have been passed through sigmoid and had x and y offsets added
-            # the x and y offsets treat grid cells as 1 x 1 boxes, so sigmoid works
-            # need to multiply them by stride to get overall center coords of image
-            # width and height underwent an exp transform and were scaled by their respective anchors
-            prediction[:,:,:4].assign(prediction[:,:,:4] * params.grid_stride)
-            prediction[:,:,params.vec_len:params.vec_len+4].assign(prediction[:,:,params.vec_len:params.vec_len+4] * params.grid_stride)
+        # apply sigmoid to class scores to make them probabilities
+        # index 4 and 12 is the object conf score, this isn't being modified here
+        b1_class_probs = tf.math.sigmoid(predictions[:,:,:, 5 : 5 + params.num_classes])
+        b2_class_probs = tf.math.sigmoid(predictions[:,:,:, 15 : 15 + params.num_classes])
 
-            prediction = tf.convert_to_tensor(prediction, dtype = tf.float32)
-            if transformed_preds is None:
-                transformed_preds = prediction
-            else:
-                transformed_preds = tf.concat([transformed_preds, prediction], 0)
+        # resize coordinates to size of input image
+        b1_center_coords = b1_center_coords * params.grid_stride
+        b2_center_coords = b2_center_coords * params.grid_stride
+        b1_wh_coords = b1_wh_coords * params.grid_stride
+        b2_wh_coords = b2_wh_coords * params.grid_stride
 
-        transformed_preds = tf.reshape(transformed_preds, [num_preds, 40, 60, params.vec_len * 2])
-        return transformed_preds
+        center_coords = tf.stack([b1_center_coords, b2_center_coords])
+        center_coords_shape = center_coords.shape
+        center_coords = tf.reshape(center_coords, [center_coords_shape[1], center_coords_shape[2], 
+                                                        center_coords_shape[3], center_coords_shape[0], center_coords_shape[4]])
+        
+        wh_coords = tf.stack([b1_wh_coords, b2_wh_coords])
+        wh_coords_shape = wh_coords.shape
+        wh_coords = tf.reshape(wh_coords, [wh_coords_shape[1], wh_coords_shape[2], 
+                                                        wh_coords_shape[3], wh_coords_shape[0], wh_coords_shape[4]])
+
+        obj_scores = tf.stack([b1_obj_scores, b2_obj_scores])
+        obj_scores = tf.expand_dims(obj_scores, 4)
+        obj_scores_shape = obj_scores.shape
+        obj_scores = tf.reshape(obj_scores, [obj_scores_shape[1], obj_scores_shape[2], 
+                                                        obj_scores_shape[3], obj_scores_shape[0], obj_scores_shape[4]])
+
+        class_probs = tf.stack([b1_class_probs, b2_class_probs])
+        class_probs_shape = class_probs.shape
+        class_probs = tf.reshape(class_probs, [class_probs_shape[1], class_probs_shape[2], 
+                                                        class_probs_shape[3], class_probs_shape[0], class_probs_shape[4]])
+        # (batch, rows, cols, anchors, vals)
+        return center_coords, wh_coords, obj_scores, class_probs

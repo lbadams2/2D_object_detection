@@ -6,6 +6,8 @@ from detect_net import DetectNet
 import params
 from create_dataset import draw_orig_image
 
+
+
 # only penalize classification grid cell using SSE
 # only penalize coordinate loss if object present in grid cell and box responsible for that object
 # for cells with no object penalize classification score using SSE
@@ -15,82 +17,78 @@ def loss(model, x, y, training):
     # training=training is needed only if there are layers with different
     # behavior during training versus inference (e.g. Dropout).
     y_, _ = model(x, training=training)
+    # (batch, rows, cols, anchors, vals)
+    center_coords, wh_coords, obj_scores, class_probs = DetectNet.predict_transform(y_)
     total_loss = 0
+    center_coords_shape = center_coords.shape
+    class_probs_shape = class_probs.shape
+    true_obj_coord_mask = tf.constant(1, shape=center_coords_shape, dtype=tf.float32)
+    true_obj_coord_mask = tf.Variable(true_obj_coord_mask)
+    true_obj_class_mask = tf.constant(1, shape=class_probs_shape, dtype=tf.float32)
+    true_obj_class_mask = tf.Variable(true_obj_class_mask)
+    true_obj_vals = tf.constant(0, shape=[center_coords_shape[0], center_coords_shape[1], center_coords_shape[2], center_coords_shape[3], params.vec_len], dtype=tf.float32)
+    true_obj_vals = tf.Variable(true_obj_vals)
+    true_grid_coords = (y[:,:,:2] // params.grid_stride) % 60
+    true_2d = tf.constant(1, shape=[2,2], dtype=tf.float32)
+    true_25 = tf.constant(1, shape=[2,5], dtype=tf.float32)
+    for i in range(true_grid_coords.shape[0]):
+        for j in range(true_grid_coords.shape[1]):
+            grid_x = int(true_grid_coords[i, j, 0].numpy())
+            grid_y = int(true_grid_coords[i, j, 1].numpy())
+            true_obj_coord_mask[i, grid_y, grid_x, :, :].assign(true_2d)
+            true_obj_class_mask[i, grid_y, grid_x, :, :].assign(true_25)
+            true_obj_vals[i, grid_y, grid_x, 0, :].assign(y[i, j, :])
+            true_obj_vals[i, grid_y, grid_x, 1, :].assign(y[i, j, :])
 
-    for i in range(params.batch_size):
-        for j in range(y_.shape[1]): # rows
-            for k in range(y_.shape[2]): # columns
-                objs_in_cell = []
-                for obj in y[i]: # get true objects in current grid cell
-                    cell_x = obj[0] // params.grid_stride
-                    cell_y = obj[1] // params.grid_stride
-                    if cell_x.numpy() == j and cell_y.numpy() == k:
-                        objs_in_cell.append(obj)
+    pred_wh_half = wh_coords / 2.
+    # bottom left corner
+    pred_mins = center_coords - pred_wh_half
+    # top right corner
+    pred_maxes = center_coords + pred_wh_half
 
-                if objs_in_cell:
-                    highest_iou = -1
-                    num_objs_cell = len(objs_in_cell)
-                    # iou_arr contains the ious between each box in cell and all objects in cell
-                    iou_arr = tf.zeros([num_objs_cell, params.num_anchors], tf.float32)
-                    iou_arr = tf.Variable(iou_arr)
-                    for b in range(params.num_anchors): # find predicted box with highest iou with obj in current cell
-                        start_ind = b * params.vec_len
-                        end_ind = start_ind + params.vec_len
-                        pred_vec = y_[i, j, k, start_ind:end_ind]
-                        ious = DetectNet.bbox_iou(pred_vec, objs_in_cell) # iou of b with all objs
-                        iou_arr[:,b].assign(ious)
+    true_xy = true_obj_vals[..., 0:2]
+    true_wh = true_obj_vals[..., 2:4]
+    true_wh_half = true_wh / 2.
+    true_mins = true_xy - true_wh_half
+    true_maxes = true_xy + true_wh_half
 
-                    # while list size < num_boxes, get max over all rows, if row index of max not in list append to list, make max 0 in iou_arr
-                    # pick unique bounding box for each true object
-                    pred_to_obj = {}
-                    obj_to_pred = {}
-                    while len(pred_to_obj) < min(params.num_anchors, num_objs_cell):
-                        max_ = tf.math.reduce_max(iou_arr) # returns max val
-                        max_mask = tf.equal(iou_arr, max_)
-                        max_loc = tf.where(max_mask)[0] # just get first max
-                        max_obj, max_b = max_loc[0].numpy(), max_loc[1].numpy()
-                        if max_b not in pred_to_obj and max_obj not in obj_to_pred:
-                            pred_to_obj[max_b] = max_obj
-                            obj_to_pred[max_obj] = max_b
-                            bc = tf.constant(-1, shape=[num_objs_cell], dtype=tf.float32)
-                            iou_arr[:,max_b].assign(bc) # so this box won't be selected again
+    # max bottom left corner
+    intersect_mins = tf.math.maximum(pred_mins, true_mins)
+    # min top right corner
+    intersect_maxes = tf.math.minimum(pred_maxes, true_maxes)    
+    intersect_wh = tf.math.maximum(intersect_maxes - intersect_mins, 0.)
+    # product of difference between x max and x min, y max and y min
+    intersect_areas = intersect_wh[..., 0] * intersect_wh[..., 1]
 
-                    # if cell contains object(s), only calculate coordinate and class prob loss for box resp for each object
-                    for b in pred_to_obj:
-                        start_ind = b * params.vec_len
-                        end_ind = start_ind + params.vec_len
-                        pred_vec = y_[i, j, k, start_ind:end_ind]
-                        true_vec = y[i, pred_to_obj[b]]
-                        # need to ensure coordinates for pred vec are absolute over entire image
-                        center_sse = (true_vec[0] - pred_vec[0])**2 + (true_vec[1] - pred_vec[1])**2
-                        total_loss += params.coord_loss_weight * center_sse
 
-                        wh_sse = (true_vec[2] - pred_vec[2])**2 + (true_vec[3] - pred_vec[3])**2
-                        total_loss = params.coord_loss_weight * wh_sse
+    pred_areas = wh_coords[..., 0] * wh_coords[..., 1]
+    true_areas = true_wh[..., 0] * true_wh[..., 1]
 
-                        c_idx = 5
-                        class_sse = 0
-                        # YOLO paper only does 1 set of class probs per cell, not per bounding box
-                        # may need to adjust this
-                        for c in range(c_idx, c_idx + params.num_classes):
-                            class_sse += (true_vec[c] - pred_vec[c])**2
-                        total_loss += class_sse
+    union_areas = pred_areas + true_areas - intersect_areas
+    iou_scores = intersect_areas / union_areas
 
-                        obj_conf_sse = (1 - pred_vec[4])**2
-                        total_loss += obj_conf_sse
+    # Best IOUs for each location.
+    iou_scores = tf.expand_dims(iou_scores, 4)
+    best_ious = tf.keras.backend.max(iou_scores, axis=4)  # Best IOU scores.
+    best_ious = tf.expand_dims(best_ious, 4)
 
-                    # can also do classification error for box not used if there is one
-                    # YOLO paper only does 1 set of class probs per cell
+    # A detector has found an object if IOU > thresh for some true box.
+    object_detections = tf.keras.backend.cast(best_ious > 0.6, dtype=tf.float32)
 
-                # if no object in cell, only calculate loss on the object confidence for each box in cell
-                else:
-                    for b in range(params.num_anchors):
-                        start_ind = b * params.vec_len
-                        end_ind = start_ind + params.vec_len
-                        pred_vec = y_[i, j, k, start_ind:end_ind]
-                        obj_conf_sse = (1 - pred_vec[4])**2
-                        obj_conf_sse = params.noobj_loss_weight * obj_conf_sse
-                        total_loss += obj_conf_sse
+    # for both no obj and obj only calculate loss for boxes that had high ious
+    no_obj_weights = params.noobj_loss_weight * (1 - object_detections) * (1 - true_obj_coord_mask)
+    no_obj_loss = no_obj_weights * tf.math.square(obj_scores)
+
+    obj_conf_loss = params.coord_loss_weight * true_obj_coord_mask * tf.math.square(1 - obj_scores)
+    conf_loss = no_obj_loss + obj_conf_loss
+    class_loss = true_obj_class_mask * tf.math.square(true_obj_vals[..., 5:] - class_probs)
+    coord_loss = true_obj_coord_mask * tf.math.square(true_obj_vals[..., 0:2] - center_coords)
+    coord_loss += true_obj_coord_mask * tf.math.square(true_obj_vals[..., 2:4] - wh_coords)
+
+    confidence_loss_sum = tf.keras.backend.sum(conf_loss)
+    classification_loss_sum = tf.keras.backend.sum(class_loss)
+    coordinates_loss_sum = tf.keras.backend.sum(coord_loss)
+    total_loss = 0.5 * (confidence_loss_sum + classification_loss_sum + coordinates_loss_sum)            
 
     return total_loss
 
