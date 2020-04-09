@@ -84,8 +84,8 @@ class DetectNet(layers.Layer):
         new_dim = int((input_dim - kern_sz + 2*pdng) / strd) + 1
         return new_dim
     
-    # 1 wide and 1 tall anchor box for each grid cell, normalize dims to fit in grid cell
-    # not sure if grid cells should be 1 x 1 or (img_width / stride x img_height / stride)
+    # each anchor should be in the range grid_width x grid_height (17 x 13)
+    # multiply by grid_stride to coords on image
     @staticmethod
     def create_anchors():
         wide_anchor = tf.constant(0, dtype=tf.float32, shape=(2))
@@ -253,7 +253,7 @@ class DetectNet(layers.Layer):
         grid_x = np.arange(grid_size_x)
         grid_y = np.arange(grid_size_y)
         # a contains 40 rows of x-offsets, each row identical counting up to 60
-        # b contains 40 rows of y-offsets, first row 60 0's, second 60 1's, and so on
+        # b contains 40 rows of y-offsets, first row 60 0's, second 60 1's, and so on up to 60 40's
         a,b = np.meshgrid(grid_x, grid_y)
         x_offset = tf.constant(a, dtype=tf.float32)
         y_offset = tf.constant(b, dtype=tf.float32)
@@ -277,10 +277,10 @@ class DetectNet(layers.Layer):
         b2_class_probs = tf.math.sigmoid(predictions[:,:,:, 15 : 15 + params.num_classes])
 
         # resize coordinates to size of input image
-        b1_center_coords = b1_center_coords * params.grid_stride
-        b2_center_coords = b2_center_coords * params.grid_stride
-        b1_wh_coords = b1_wh_coords * params.grid_stride
-        b2_wh_coords = b2_wh_coords * params.grid_stride
+        #b1_center_coords = b1_center_coords * params.grid_stride
+        #b2_center_coords = b2_center_coords * params.grid_stride
+        #b1_wh_coords = b1_wh_coords * params.grid_stride
+        #b2_wh_coords = b2_wh_coords * params.grid_stride
 
         center_coords = tf.stack([b1_center_coords, b2_center_coords])
         center_coords_shape = center_coords.shape
