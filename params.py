@@ -9,6 +9,7 @@ nms_conf = .5
 coord_loss_weight = 5
 noobj_loss_weight = .5
 num_anchors = 2
+max_boxes = 20 # max boxes to return from nms
 ##############################################
 
 

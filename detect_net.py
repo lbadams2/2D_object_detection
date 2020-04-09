@@ -1,6 +1,7 @@
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Conv2D, Flatten, Dropout, MaxPool2D
 from tensorflow.keras import layers
+import tensorflow.keras.backend as K
 import tensorflow as tf
 import numpy as np
 import params
@@ -73,10 +74,11 @@ class DetectNet(layers.Layer):
 
         # this will filter 4800 boxes down to 1 box per object, output likely (3 x 7) or something
         # 8 to 7 b/c removes class probs for non predicted objects and adds class index for predicted object
-        pred_idxs = None
+        filtered_output = None
         if not self.training:
-            pred_idxs = DetectNet.filter_boxes(x)
-        return x, pred_idxs
+            transformed_predictions = DetectNet.predict_transform(x)
+            filtered_output = DetectNet.filter_boxes(transformed_predictions)
+        return x, filtered_output
 
 
     @staticmethod
@@ -146,89 +148,43 @@ class DetectNet(layers.Layer):
         
         return iou
 
-
-    # predictions will be (4800 x 8)
     @staticmethod
-    def filter_boxes(predictions):
-        predictions = tf.reshape(predictions, [60 * 40 * 2, params.vec_len])
-        predictions = tf.Variable(predictions)
-        conf_mask = tf.Variable(predictions[:,4] > params.object_conf)
-        conf_mask = tf.dtypes.cast(conf_mask, tf.double)
-        conf_mask = tf.ones([4800, params.vec_len], dtype=tf.double) * tf.expand_dims(conf_mask,1)
-        predictions.assign(predictions * conf_mask) # this should 0 out all 8 box attrs if 4th elem below object threshold
-
-        max_ind = tf.math.argmax(predictions[:,5:5+ params.num_classes], axis=1) # get index of max class prob for each box
-        max_ind = tf.dtypes.cast(max_ind, tf.float64)
-        max_ind = tf.expand_dims(max_ind, 1)
-        max_score = tf.reduce_max(predictions[:,5:5+ params.num_classes], axis=1) # get value of max class prob for each box
-        max_score = tf.dtypes.cast(max_score, tf.float64)
-        max_score = tf.expand_dims(max_score, 1)
-        seq = (predictions[:,:5], max_ind, max_score) # (4800 x 5, 1, 1)
-        image_pred = tf.concat(seq, 1)
-        # image_pred is 4800 x 7 containing coords and highest prob class and index
+    def filter_boxes(transformed_predictions):
+        center_coords, wh_coords, obj_scores, class_probs = transformed_predictions
         
-        zeros = tf.zeros([4800, 1], tf.float64)
-        where = tf.not_equal(image_pred[:,0], zeros[:,0])
-        nonzero_indices = tf.where(where)
-        image_pred_ = tf.gather(image_pred, nonzero_indices, axis=0)
-        image_pred_ = tf.squeeze(image_pred_, 1) # image_pred now only contains with object score greater than object_conf
-        if image_pred_.shape[0] == 0:
-            return # if there are no nonzero indices, no predictions for this image
+        # get bounding boxes from center and wh coords
+        box_mins = center_coords - (wh_coords / 2.)
+        box_maxes = center_coords + (wh_coords / 2.)
+        boxes = K.concatenate([
+            box_mins[..., 1:2],
+            box_mins[..., 0:1],
+            box_maxes[..., 1:2],
+            box_maxes[..., 0:1]
+        ])
         
-        img_classes, _ = tf.unique(image_pred_[:,-2])
-        output = None
-        for cls_ind in img_classes:
-            cls_mask = image_pred_[:,-2] == cls_ind
-            cls_mask = tf.dtypes.cast(cls_mask, tf.double)
-            cls_mask = tf.ones(image_pred_.shape, dtype=tf.double) * tf.expand_dims(cls_mask,1)
-            cls_mask = image_pred_ * cls_mask # get boxes with prediction for this class
-            class_mask_ind = tf.not_equal(cls_mask[:,-1], zeros[:image_pred_.shape[0],0])
-            nonzero_indices = tf.where(class_mask_ind)
-            image_pred_class = tf.gather(image_pred_, nonzero_indices, axis=0)
-            if len(image_pred_class.shape) > 2:
-                image_pred_class = tf.squeeze(image_pred_class, 1) # should be boxes that have a prediction for cls_ind
+        # 0 out all the boxes that have confidence less than object_conf param
+        box_scores = obj_scores * class_probs
+        box_classes = K.argmax(box_scores, axis=-1)
+        box_class_scores = K.max(box_scores, axis=-1)
+        prediction_mask = box_class_scores >= params.object_conf
 
-            _, sorted_inds = tf.math.top_k(image_pred_class[:,4], k=tf.size(image_pred_class[:,4]))
-            image_pred_class = tf.gather(image_pred_class, sorted_inds, axis=0) # should be sorted by obj score descending now
-            if len(image_pred_class.shape) > 2:
-                image_pred_class = tf.squeeze(image_pred_class, 1)
-            idx = image_pred_class.shape[0]
-
-            # NMS - multiple grid cells may detect same object. Iterate from highest prob box to smallest and find IOU
-            # between that box and all with lower confidence, for the boxes with IOU higher than threshold, remove
-            # them from the tensor.  Tensor gets smaller each iteration but rows between 0 and i that weren't previously
-            # removed will remain.
-            for i in range(idx):
-                try:
-                    # get iou of ith box with all boxes after it
-                    ious = DetectNet.bbox_iou(tf.expand_dims(image_pred_class[i], 1), image_pred_class[i+1:])
-                # rows are being removed each iteration, eventually i will exceed size of tensor
-                except ValueError as e:
-                    break
-
-                except (IndexError, tf.errors.InvalidArgumentError):
-                    break
-                
-                iou_mask = ious < params.nms_conf
-                iou_mask = tf.dtypes.cast(iou_mask, tf.double)
-                iou_mask = tf.ones(image_pred_class[i+1:].shape, dtype=tf.double) * tf.expand_dims(iou_mask,1)
-                iou_mask = image_pred_class[i+1:] * iou_mask # zero out 7 dim vectors for boxes less than threshold
-                image_pred_class = tf.concat([image_pred_class[:i+1], iou_mask], 0) # put preceding i rows back in tensor
-                # 0 to i will be non zero, i+1 and up are affected by the mask
-                iou_mask_ind = tf.not_equal(image_pred_class[:,-1], zeros[:image_pred_class.shape[0], 0])
-                nonzero_indices = tf.where(iou_mask_ind)
-                # every iteration removes rows that overlap too much with a higher confidence prediction
-                # nonzero_indices includes rows kept from previous iterations (0 to i)
-                image_pred_class = tf.gather(image_pred_class, nonzero_indices, axis=0)
-                if len(image_pred_class.shape) > 2:
-                    image_pred_class = tf.squeeze(image_pred_class, 1)
-
-            if output is None:
-                output = image_pred_class
-            else:
-                output = tf.concat([output, image_pred_class], 0)
+        boxes = tf.boolean_mask(boxes, prediction_mask)
+        scores = tf.boolean_mask(box_class_scores, prediction_mask)
+        classes = tf.boolean_mask(box_classes, prediction_mask)
         
-        return output
+        # scale bounding boxes to image size
+        image_dims = K.stack([params.im_height, params.im_width, params.im_height, params.im_width])
+        image_dims = K.reshape(image_dims, [1, 4])
+        boxes = boxes * image_dims
+
+        # non-max-suppression
+        max_boxes_tensor = K.variable(params.max_boxes, dtype='int32')
+        nms_index = tf.image.non_max_suppression(boxes, scores, max_boxes_tensor, iou_threshold=params.nms_conf)
+        boxes = K.gather(boxes, nms_index)
+        scores = K.gather(scores, nms_index)
+        classes = K.gather(classes, nms_index)
+        
+        return boxes, scores, classes
 
 
     # this applies sigmoids and exponential function to some dims to make them between 0 and 1 or positive
