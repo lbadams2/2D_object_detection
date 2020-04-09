@@ -9,6 +9,7 @@ nms_conf = .5
 coord_loss_weight = 5
 noobj_loss_weight = 1
 num_anchors = 2
+max_boxes = 20 # max boxes to return from nms
 img_scale_factor = 13 / 40 # (416 x 624)
 ##############################################
 
