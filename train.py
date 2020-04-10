@@ -7,14 +7,12 @@ import params
 from create_dataset import draw_orig_image
 
 
-true_box_img_dict = {}
-
 # only penalize classification grid cell using SSE
 # only penalize coordinate loss if object present in grid cell and box responsible for that object
 # for cells with no object penalize classification score using SSE
 # for boxes in grid cell that aren't responsible for object (only 1 if 2 anchor boxes) do SSE on object confidence score
 # sum losses for all grid cells
-def loss(model, x, y, training):
+def loss(model, x, true_box_grid, true_box_mask, training):
     # training=training is needed only if there are layers with different
     # behavior during training versus inference (e.g. Dropout).
     y_, _ = model(x, training=training)
@@ -22,49 +20,14 @@ def loss(model, x, y, training):
     center_coords, wh_coords, obj_scores, class_probs = DetectNet.predict_transform(y_)
     total_loss = 0
 
-    center_coords_shape = center_coords.shape
-    class_probs_shape = class_probs.shape
-    true_grid_coords = (y[:,:,:2] // params.grid_stride) % 60
-    
-    # add remaining vals back
-    true_grid_vals = tf.concat([true_grid_coords, y[:,:,2:]], axis=2)
-
-    true_grid_coords = tf.cast(true_grid_coords, tf.int32)
-    s1 = tf.shape(true_grid_coords, out_type=true_grid_coords.dtype)
-    b = tf.range(s1[0])
-    # Repeat batch index for each object
-    b = tf.repeat(b, s1[1]) # (64) 16 times num_obj
-    # Concatenate with row and column indices - (64, 1) concat (64, 2) = (64, 3), b is first col, true coords second, third col
-    # vals in first col(each batch index 0-15) repeated 4 times from repeat function
-    idx = tf.concat([tf.expand_dims(b, 1), tf.reshape(true_grid_coords, [-1, s1[2]])], axis=1)
-    # Make mask by scattering values
-    s2 = tf.shape(center_coords) # just need s2 to be (batch, rows, cols, depth, 2) for coord mask, last dim 5 for class mask
-    # idx (64, 3), ones_like (64), s2[:3] (16, 40 60) = mask (16, 40, 60)
-    # the vals of idx index into s2[:3], and set each to 1 (or whatever value is in middle arg)
-    mask = tf.scatter_nd(idx, tf.ones_like(b, dtype=tf.float32), s2[:3])
-    # Tile mask across last two dimensions
-    s3 = tf.shape(class_probs)
-    true_obj_coord_mask = tf.tile(mask[..., tf.newaxis, tf.newaxis], [1, 1, 1, s2[3], s2[4]])
-    true_obj_class_mask = tf.tile(mask[..., tf.newaxis, tf.newaxis], [1, 1, 1, s3[3], s3[4]])
-
-    true_obj_vals_batch = None
-    for i in range(params.batch_size):
-        img = x[i]
-        true_obj_vals = true_box_img_dict[img.id]
-        if true_obj_vals_batch is None:
-            true_obj_vals_batch = true_obj_vals
-        else:
-            true_obj_vals_batch = tf.concat([true_obj_vals_batch, true_obj_vals], axis=0)
-
-
     pred_wh_half = wh_coords / 2.
     # bottom left corner
     pred_mins = center_coords - pred_wh_half
     # top right corner
     pred_maxes = center_coords + pred_wh_half
 
-    true_xy = true_obj_vals[..., 0:2]
-    true_wh = true_obj_vals[..., 2:4]
+    true_xy = true_box_grid[..., 0:2]
+    true_wh = true_box_grid[..., 2:4]
     true_wh_half = true_wh / 2.
     true_mins = true_xy - true_wh_half
     true_maxes = true_xy + true_wh_half
@@ -93,18 +56,22 @@ def loss(model, x, y, training):
     object_detections = tf.keras.backend.cast(best_ious > 0.6, dtype=tf.float32)
 
     # for both no obj and obj only calculate loss for boxes that had high ious
-    no_obj_weights = params.noobj_loss_weight * (1 - object_detections) * (1 - true_obj_coord_mask)
+    no_obj_weights = params.noobj_loss_weight * (1 - object_detections) * (1 - true_box_mask[...,:1])
     no_obj_loss = no_obj_weights * tf.math.square(obj_scores)
 
-    obj_conf_loss = params.coord_loss_weight * true_obj_coord_mask * tf.math.square(1 - obj_scores)
+    obj_conf_loss = params.coord_loss_weight * true_box_mask[...,:1] * tf.math.square(1 - obj_scores)
     conf_loss = no_obj_loss + obj_conf_loss
-    class_loss = true_obj_class_mask * tf.math.square(true_obj_vals[..., 5:] - class_probs)
-    coord_loss = true_obj_coord_mask * tf.math.square(true_obj_vals[..., 0:2] - center_coords)
-    coord_loss += true_obj_coord_mask * tf.math.square(true_obj_vals[..., 2:4] - wh_coords)
+    class_loss = true_box_mask * tf.math.square(true_box_grid[..., 5:] - class_probs)
+
+    # keras_yolo does a sigmoid on center_coords here but they should already be between 0 and 1 from predict_transform
+    pred_boxes = tf.concat([center_coords, wh_coords], axis=-1)
+    coord_loss = true_box_mask[...,:4] * tf.math.square(true_box_grid[...,:4] - pred_boxes)
 
     confidence_loss_sum = tf.keras.backend.sum(conf_loss)
     classification_loss_sum = tf.keras.backend.sum(class_loss)
     coordinates_loss_sum = tf.keras.backend.sum(coord_loss)
+
+    # not sure why .5 is here, maybe to make sure numbers don't get too large
     total_loss = 0.5 * (confidence_loss_sum + classification_loss_sum + coordinates_loss_sum)            
 
     return total_loss
@@ -139,68 +106,81 @@ def format_data(image, labels):
     #print(vecs)
     image = tf.image.decode_jpeg(image)
     image = tf.image.convert_image_dtype(image, dtype=tf.float32) # this should also normalize pixels
+    image = tf.image.resize(image, [params.scaled_height, params.scaled_width])
     #print(image)
     return image, vecs
 
 
 # tensors are (rows, cols)
 # coords are (x, y) - opposite
-def create_true_box_grid(image, labels):    
-    anchors = DetectNet.create_anchors()
-    for i, boxes in enumerate(labels):
-        true_boxes = tf.constant(0, shape=[params.grid_height, params.grid_width, params.num_anchors, params.vec_len])
-        true_boxes = tf.Variable(true_boxes)        
+# create class mask here too
+def create_true_box_grid(y):
+    orig_size = tf.keras.backend.stack((params.im_width, params.im_height))
+    orig_size = tf.cast(orig_size, tf.float32)
+    center_boxes = y[:,:2] / orig_size
+    #center_boxes = tf.cast(center_boxes, tf.float32)
+    boxes_wh = y[:,2:4] / orig_size
+    #boxes_wh = tf.cast(boxes_wh, tf.float32)
+    conv_size = tf.keras.backend.stack((params.grid_width, params.grid_height))
+    conv_size = tf.cast(conv_size, tf.float32)
+    center_boxes = center_boxes * conv_size
+    boxes_wh = boxes_wh * conv_size
+    # box coords are now normalized to be between [grid_width, grid_height] (same scale as anchors)
+    true_boxes = tf.concat([center_boxes, boxes_wh, y[:,4:]], axis=1)
 
-        boxes_coords = boxes[:,:4] * params.img_scale_factor
-        boxes_coords_norm = boxes_coords / params.grid_stride # on same scale as anchors now
-        boxes_grids = boxes_coords[:,:2] // params.grid_stride
-        num_objs = boxes.shape[0].numpy()
-        for obj in range(num_objs):
-            best_iou = 0
-            best_anchor = 0
-            box_norm = boxes_coords_norm[obj]
-            tensor_ind_y = boxes_grids[obj][0]
-            tensor_ind_x = boxes_grids[obj][1]
-            
-            # find best anchor for current box
-            for k, anchor in enumerate(anchors):
-                # center box
-                box_max = boxes_coords_norm[2:] / 2
-                box_min = -box_max
+    anchors = DetectNet.create_anchors().numpy()
+    true_box_grid = tf.zeros(shape=[params.grid_height, params.grid_width, params.num_anchors, params.vec_len], dtype=tf.float32)
 
-                # center anchor
-                anchor_max = anchor / 2
-                anchor_min = -anchor_max
+    box_mask = tf.zeros(shape=[params.grid_height, params.grid_width, params.num_anchors, 5], dtype=tf.float32)
+    mask_vec = tf.ones([5], dtype=tf.float32)
+    
+    num_objs = y.shape[0]
+    for obj in range(num_objs):
+        best_iou = 0
+        best_anchor = 0
+        box = true_boxes[obj]
+        i = int(tf.math.floor(box[1]).numpy()) # row
+        #i = tf.cast(i, tf.float32)
+        j = int(tf.math.floor(box[0]).numpy()) # column
+        #j = tf.cast(j, tf.float32) 
 
-                intersect_mins = tf.math.maximum(box_min, anchor_min)
-                intersect_maxes = tf.math.minimum(box_max, anchor_max)
-                intersect_wh = tf.maximum(intersect_maxes - intersect_mins, 0)
-                intersect_area = intersect_wh[0] * intersect_wh[1]
-                box_area = boxes_coords_norm[2] * boxes_coords_norm[3]
-                anchor_area = anchor[0] * anchor[1]
-                iou = intersect_area / (box_area + anchor_area - intersect_area)
-                if iou > best_iou:
-                    best_iou = iou
-                    best_anchor = k
+        # find best anchor for current box
+        for k, anchor in enumerate(anchors):
+            # center box
+            box_max = box[2:4] / 2
+            box_min = -box_max
 
-            # its possible 2 objects in same cell have same anchor, last will overwrite
-            if best_iou > 0:
-                box_vec = tf.constant(0, shape=[params.vec_len])
-                box_vec = tf.Variable(box_vec)
-                box_vec[0].assign(box_norm[0] - tensor_ind_x) # center should be between 0 and 1, like prediction will be
-                box_vec[1].assign(box_norm[1] - tensor_ind_y) # center should be between 0 and 1, like prediction will be
-                adjusted_width = box_norm[2] / anchor[0]
-                box_vec[2].assign(adjusted_width)
-                adjusted_height = box_norm[3] / anchor[1]
-                box_vec[3].assign(adjusted_height)
-                true_boxes[i, tensor_ind_y, tensor_ind_x, k, :].assign(box_vec)
-                
-        true_box_img_dict[image.id] = true_boxes
+            # center anchor
+            anchor_max = anchor / 2
+            anchor_min = -anchor_max
 
+            intersect_mins = tf.math.maximum(box_min, anchor_min)
+            intersect_maxes = tf.math.minimum(box_max, anchor_max)
+            intersect_wh = tf.maximum(intersect_maxes - intersect_mins, 0)
+            intersect_area = intersect_wh[0] * intersect_wh[1]
+            box_area = box[2] * box[3]
+            anchor_area = anchor[0] * anchor[1]
+            iou = intersect_area / (box_area + anchor_area - intersect_area)
+            if iou > best_iou:
+                best_iou = iou
+                best_anchor = k
 
-def resize_images(image, labels):
-    image = tf.image.resize(image, [416, 624])
-    return image, labels
+        # its possible 2 objects in same cell have same anchor, last will overwrite
+        if best_iou > 0:
+            box_vec = tf.constant(0, shape=[params.vec_len], dtype=tf.float32)
+            box_vec = tf.Variable(box_vec)
+            box_vec[0].assign(box[0] - i) # center should be between 0 and 1, like prediction will be
+            box_vec[1].assign(box[1] - j) # center should be between 0 and 1, like prediction will be
+            adjusted_width = tf.math.log(box[2] / anchors[best_anchor][0]) # quotient might be less than one, not sure why log is used
+            box_vec[2].assign(adjusted_width)
+            adjusted_height = tf.math.log(box[3] / anchors[best_anchor][1]) # quotient might be less than one, not sure why log is used
+            box_vec[3].assign(adjusted_height)
+            true_box_grid[i, j, best_anchor, :].assign(box_vec)
+            box_mask[i, j, best_anchor, :].assign(mask_vec)
+        
+    # could pad to 1920 x 1920 with 0s then resize to 416 x 416
+    
+    return true_box_grid, box_mask
         
 
 # each object in training image is assigned to grid cell that contains object's midpoint
@@ -210,13 +190,20 @@ def train():
     dataset = tf.data.TFRecordDataset(FILENAME)    
     dataset = dataset.map(_parse_image_function)
     dataset = dataset.map(format_data)
+
     
     print('Begin data preprocessing')
-    dataset = dataset.map(resize_images)
-    dataset = dataset.map(create_true_box_grid)
+    true_box_grids = []
+    true_box_masks = []
+    for _, y in dataset:
+        true_box_grid, true_box_mask = create_true_box_grid(y)
+        true_box_grids.append(true_box_grid)
+        true_box_masks.append(true_box_mask)
+    true_box_grids = tf.stack(true_box_grids)
+    true_box_masks = tf.stack(true_box_masks)
     print('End data preprocessing')
     
-    dataset = dataset.padded_batch(params.batch_size, padded_shapes=([None, None, 3], [None, None]))
+    #dataset = dataset.padded_batch(params.batch_size, padded_shapes=([None, None, 3], [None, None]))
 
     '''
     VAL_FILENAME = 'data/validation/segment-272435602399417322_2884_130_2904_130_with_camera_labels.tfrecord'
@@ -235,10 +222,10 @@ def train():
     # to get validation stats need to do nms during training also, return result of nms in addition to all boxes
     # then check iou of each nms box with each ground truth from val set, if above threshold compare classification, use comp_nms_gt()
     #for epoch in range(params.epochs):
-    for x, y in dataset:
+    for x, normalized_box_grid, orig_boxes in dataset:
         #print(x)
         #print(y)
-        loss_value, grads = grad(model, x, y)
+        loss_value, grads = grad(model, x, normalized_box_grid)
         print('train loss is ', loss_value)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
