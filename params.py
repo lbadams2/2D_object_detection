@@ -11,7 +11,7 @@ nms_conf = .5
 coord_loss_weight = 5
 noobj_loss_weight = 1
 num_anchors = 5
-max_boxes = 10
+max_boxes = 20
 scaled_height = 416
 scaled_width = 416
 
