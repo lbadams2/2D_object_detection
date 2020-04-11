@@ -45,7 +45,7 @@ class DetectNet(layers.Layer):
         self.conv_3 = Conv2D(128, params.kernel_size, strides=params.kernel_size, padding='valid', data_format='channels_last', activation='relu')
         self.flatten_layer = Flatten()
         self.dropout = Dropout(0.4)
-        self.linear_1 = Dense(40 * 60 * params.vec_len * params.num_anchors, activation='relu')
+        self.linear_1 = Dense(params.grid_height * params.grid_width * params.pred_vec_len * params.num_anchors, activation='relu')
         #self.linear_2 = Dense(params.vec_len) # 4 coordinates, objectness score, 3 class probs
         # output here should be (batch_sz, height/grid_stride, width/grid_stride, num_anchors * vec_len
 
@@ -66,18 +66,15 @@ class DetectNet(layers.Layer):
         x = self.linear_1(x)
         #x = self.dropout(x)
         #x = self.linear_2(x)
-        x = tf.reshape(x, [params.batch_size, 40, 60, params.vec_len * 2])
-        # x should be (batch_sz, 60 x 40 x 16) here
 
-        #x = DetectNet.predict_transform(x, self.anchors_grid)
+        x = DetectNet.predict_transform(x)
         # now it should have anchors for (60 x 40 x 16)
 
         # this will filter 4800 boxes down to 1 box per object, output likely (3 x 7) or something
         # 8 to 7 b/c removes class probs for non predicted objects and adds class index for predicted object
         filtered_output = None
         if not self.training:
-            transformed_predictions = DetectNet.predict_transform(x)
-            filtered_output = DetectNet.filter_boxes(transformed_predictions)
+            filtered_output = DetectNet.filter_boxes(x)
         return x, filtered_output
 
 
@@ -89,7 +86,7 @@ class DetectNet(layers.Layer):
 
     # each anchor should be in the range grid_width x grid_height
     @staticmethod
-    def create_anchors():
+    def get_anchors():
         #anchors = tf.convert_to_tensor(params.YOLO_ANCHORS, np.float32)
         anchors = tf.Variable(params.YOLO_ANCHORS, dtype=tf.float32)
         return anchors
@@ -157,7 +154,7 @@ class DetectNet(layers.Layer):
         # makes the objectness score a probability between 0 and 1
         obj_scores = tf.math.sigmoid(predictions[...,4])
         
-        anchors = DetectNet.create_anchors()
+        anchors = DetectNet.get_anchors()
         anchors = tf.reshape(anchors, [1, 1, 1, params.num_anchors, 2])
         # exp to make width and height positive then multiply by anchor dims to resize box to anchor
         # should fit close to anchor, normalizing by conv_dims should make it between 0 and approx 1

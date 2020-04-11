@@ -8,8 +8,8 @@ pool_size = 2
 grid_stride = 32 # could also use 40
 object_conf = .6
 nms_conf = .5
-coord_loss_weight = 5
-noobj_loss_weight = 1
+coord_loss_weight = 1
+obj_loss_weight = 5
 num_anchors = 5
 max_boxes = 20
 scaled_height = 416
@@ -28,5 +28,12 @@ im_width = 1920 # columns
 grid_height = int(scaled_height // grid_stride)
 grid_width = int(scaled_width // grid_stride)
 num_classes = 5
-vec_len = 5 + num_classes
+pred_vec_len = 5 + num_classes
+true_vec_len = 5
+
+TYPE_PEDESTRIAN = 0
+TYPE_VEHICLE = 1
+TYPE_CYCLIST = 2
+TYPE_SIGN = 3
+TYPE_UNKNOWN = 4
 ####################################
