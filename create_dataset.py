@@ -1,4 +1,4 @@
-from waymo_open_dataset import dataset_pb2 as open_dataset
+#from waymo_open_dataset import dataset_pb2 as open_dataset
 import numpy as np
 import tensorflow as tf
 import params
@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import os
 from detect_net import DetectNet
+import train
 
 plt.figure(figsize=(16, 8))
 
@@ -22,7 +23,6 @@ def _float_feature(value):
 
 
 def draw_orig_image(image, labels, num):    
-
     for vec in labels:
         plt.gca().add_patch(patches.Rectangle(
           xy=(vec[0] - 0.5 * vec[2], vec[1] - 0.5 * vec[3]),
@@ -36,7 +36,7 @@ def draw_orig_image(image, labels, num):
     plt.imshow(image)
     plt.grid(False)
     plt.axis('off')
-    plt.savefig('testing/batches/test-{}.png'.format(num))
+    plt.savefig('testing/new/test-{}.jpeg'.format(num))
     plt.clf()
 
 
@@ -131,7 +131,10 @@ def image_example(image_string, obj_vectors):
 
     objs = np.array(obj_vectors)
     true_box_grid, box_mask = create_true_box_grid(objs)
+    print('grid shape ', true_box_grid.shape)
     true_box_grid_flat = true_box_grid.reshape(-1)
+    print('flattened shape ', true_box_grid_flat.shape)
+    print('')
     true_box_mask_flat = box_mask.reshape(-1)
 
     box_grid_feature = tf.train.Feature(float_list=tf.train.FloatList(value=true_box_grid_flat))
@@ -146,6 +149,8 @@ def image_example(image_string, obj_vectors):
         context=fixed_features,
         feature_lists=boxes
     )
+    if len(obj_vectors) > 0:
+        print(example)
     return example
 
 
@@ -169,7 +174,7 @@ def convert():
             #print('num images in frame {}, num labels in frame {}'.format(len(frame.images), len(frame.camera_labels)))
             for camera_labels in frame.camera_labels:
                 camera_name = camera_labels.name # 0 to 5
-                image_obj = next((x for x in frame.images if x.name == camera_name), None)
+                image_obj = next((x for x in frame.images if x.name == camera_name), None)                
                 image = tf.image.decode_jpeg(image_obj.image)                
                 #print('image shape {} {}'.format(image.shape[0], image.shape[1]))
                 
@@ -222,32 +227,14 @@ def convert():
     #new_dataset = tf.data.Dataset.from_tensor_slices((images, y))
 
 
-def _parse_image_function(example):
-    # Create a dictionary describing the features.
-    context_feature = {
-        'image': tf.io.FixedLenFeature([], dtype=tf.string)
-    }
-    sequence_features = {
-        'Box Vectors': tf.io.VarLenFeature(dtype=tf.float32)
-    }
-    context_data, sequence_data = tf.io.parse_single_sequence_example(serialized=example, 
-                                    context_features=context_feature, sequence_features=sequence_features)
-
-    # Parse the input tf.Example proto using the dictionary above.
-    return context_data, sequence_data
-
 
 def draw_image(image, labels, num):
-    vecs = labels['Box Vectors']
-    image = image['image']
-    image = tf.reshape(image, [])
-    #print(image)
     image = tf.image.decode_jpeg(image)
-    vecs = tf.sparse.to_dense(vecs)
+    #print(image)
+    vecs = tf.sparse.to_dense(labels)
     if len(vecs.shape) > 2:
         vecs = tf.squeeze(vecs, 0)
 
-    '''
     for i in range(vecs.shape[0]):
         vec = vecs[i].numpy()
         plt.gca().add_patch(patches.Rectangle(
@@ -264,89 +251,43 @@ def draw_image(image, labels, num):
     plt.axis('off')
     plt.savefig('testing/new/test-{}.png'.format(num))
     plt.clf()
-    '''
 
 
-def convert_to_string(example):
-    context_feature = {
-        'image': tf.io.FixedLenFeature([], dtype=tf.string)
-    }
-    sequence_features = {
-        'Box Vectors': tf.io.VarLenFeature(dtype=tf.float32)
-    }
-    context_data, sequence_data = tf.io.parse_single_sequence_example(serialized=example, 
-                                    context_features=context_feature, sequence_features=sequence_features)
 
-
-    image = context_feature['image']
+def convert_to_string(image):
     image = tf.reshape(image, [])
     print(image)
-    #image = tf.reshape(image, [])
-    # Parse the input tf.Example proto using the dictionary above.
-    #img = tf.image.decode_jpeg(image)                                    
 
 
-def test_new_dataset():
-    image_dataset = tf.data.TFRecordDataset('image_dataset_train.tfrecord')
-    for x in image_dataset:
-        convert_to_string(x)
-    '''
-    parsed_image_dataset = image_dataset.map(_parse_image_function)
-    print('size of dataset ', len(list(parsed_image_dataset)))
-    #parsed_image_dataset = parsed_image_dataset.shuffle(100)
-    #batched_ds = parsed_image_dataset.batch(1)
+def test_grid_dataset():
+    dataset = tf.data.TFRecordDataset('image_grid_dataset_train.tfrecord')
+    dataset = dataset.map(train._parse_image_function)
+    # need to draw image before format data
     i = 0
-    for image, labels in parsed_image_dataset:
-        if i % 500 == 0:
-            draw_image(image, labels, i)
+    for img, _, _, true_boxes in dataset:
+        draw_image(img, true_boxes, i)
         i += 1
-    '''
+    dataset = dataset.map(train.format_data)
+    
+    #dataset = dataset.map(train.remove_orig_boxes)
 
-
-
-
-def create_grid_example(true_box_grid, true_box_mask):
-    true_box_grid = np.reshape(-1)
-    true_box_mask = np.reshape(-1)
-
-    box_grid_feature = tf.train.Feature(float_list=tf.train.FloatList(value=true_box_grid))
-    box_mask_feature = tf.train.Feature(float_list=tf.train.FloatList(value=true_box_mask))
-
-    feature_dict = {
-        'true_grid': box_grid_feature,
-        'mask_grid': box_mask_feature
-    }    
-
-    example = tf.train.Example(features=tf.train.Features(feature=feature_dict))
-
-    return example
-
-
-def create_grid_dataset(dataset):
-    true_box_grids = []
-    true_box_masks = []
-    examples = []
     i = 0
-    for _, y in dataset:
-        if i % 100 == 0:
-            print('processing image {}'.format(i))
-            break
-        true_box_grid, true_box_mask = create_true_box_grid(y)
-        ex = create_grid_example(true_box_grid, true_box_mask)
-        examples.append(ex)
-        true_box_grids.append(true_box_grid)
-        true_box_masks.append(true_box_mask)
+    for img, true_box_grid, box_mask, true_boxes in dataset:
+        num_objs = true_boxes.shape[0]
+        bool_mask = tf.concat([box_mask, box_mask, box_mask], axis=3)
+        bool_mask = tf.cast(bool_mask, tf.bool)
+        bool_mask = bool_mask[...,:5]
+        grid_box_filtered = tf.boolean_mask(true_box_grid, bool_mask)
+        num_grid_objs = tf.size(grid_box_filtered).numpy() / 5
+        num_true_objs = tf.size(true_boxes).numpy() / 10
+        if num_grid_objs != num_true_objs:
+            print('objs not equal {} {} {}'.format(num_grid_objs, num_true_objs, i))
+        draw_orig_image(img, true_boxes, i)
         i += 1
-    with tf.io.TFRecordWriter('grid_dataset.tfrecord') as writer:
-        for ex in examples:            
-            writer.write(ex.SerializeToString())
-    #true_box_grids = tf.stack(true_box_grids)
-    #true_box_masks = tf.stack(true_box_masks)
-    #grid_dataset = tf.data.Dataset.from_tensor_slices((true_box_grids, true_box_masks))
-    #total_dataset = tf.data.Dataset.zip((dataset, grid_dataset))
-    #print(total_dataset.element_spec)
+
 
 
 if __name__ == '__main__':
     convert() # this creates the tfrecord file
-    #test_new_dataset() # this will sample the new file and draw some images and boxes
+    #test_grid_dataset()
+    #convert_test()
