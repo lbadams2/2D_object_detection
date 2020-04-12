@@ -65,11 +65,12 @@ def loss(model, x, true_box_grid, true_box_mask, training):
 
     matching_classes = tf.cast(true_box_grid[...,4], tf.int32)
     matching_classes = tf.one_hot(matching_classes, params.num_classes)
-    class_loss = true_box_mask * tf.math.square(matching_classes - class_probs)
+    class_loss = true_box_mask[..., :1] * tf.math.square(matching_classes - class_probs)
 
     # keras_yolo does a sigmoid on center_coords here but they should already be between 0 and 1 from predict_transform
     pred_boxes = tf.concat([center_coords, wh_coords], axis=-1)
-    coord_loss = params.coord_loss_weight * true_box_mask * tf.math.square(true_box_grid - pred_boxes)
+    matching_boxes = true_box_grid[..., :4]
+    coord_loss = params.coord_loss_weight * true_box_mask[..., :1] * tf.math.square(matching_boxes - pred_boxes)
 
     confidence_loss_sum = tf.keras.backend.sum(conf_loss)
     classification_loss_sum = tf.keras.backend.sum(class_loss)
@@ -95,8 +96,8 @@ def _parse_image_function(example):
     # Create a dictionary describing the features.
     context_feature = {
         'image': tf.io.FixedLenFeature([], dtype=tf.string),
-        'true_grid': tf.io.FixedLenFeature([], dtype=tf.float32),
-        'mask_grid': tf.io.FixedLenFeature([], dtype=tf.float32)
+        'true_grid': tf.io.FixedLenFeature([4225], dtype=tf.float32),
+        'mask_grid': tf.io.FixedLenFeature([1690], dtype=tf.float32)
     }
     sequence_features = {
         'Box Vectors': tf.io.VarLenFeature(dtype=tf.float32)
@@ -127,13 +128,12 @@ def remove_orig_boxes(image, true_box_grid, mask_grid, labels):
 # and anchor box for the grid cell with highest IOU
 def train():
     FILENAME = 'image_grid_dataset_train.tfrecord'
-    dataset = tf.data.TFRecordDataset(FILENAME)    
+    dataset = tf.data.TFRecordDataset(FILENAME)   
     dataset = dataset.map(_parse_image_function)
     dataset = dataset.map(format_data)
-    
-    dataset = dataset.map(remove_orig_boxes)
-    #dataset = dataset.padded_batch(params.batch_size, padded_shapes=([None, None, 3], [None, None]))
 
+    dataset = dataset.map(remove_orig_boxes)
+    dataset = dataset.batch(params.batch_size)
     '''
     VAL_FILENAME = 'data/validation/segment-272435602399417322_2884_130_2904_130_with_camera_labels.tfrecord'
     val_dataset = tf.data.TFRecordDataset(VAL_FILENAME, compression_type='')
@@ -147,17 +147,18 @@ def train():
     #              metrics=['accuracy'])
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
-
     # to get validation stats need to do nms during training also, return result of nms in addition to all boxes
     # then check iou of each nms box with each ground truth from val set, if above threshold compare classification, use comp_nms_gt()
     #for epoch in range(params.epochs):
+    count = 0
     for x, true_box_grid, box_mask in dataset:
-        #print(x)
-        #print(y)
-        loss_value, grads = grad(model, true_box_grid, box_mask)
+        #print(x.shape, true_box_grid.shape, box_mask.shape)
+        loss_value, grads = grad(model, x, true_box_grid, box_mask)
         print('train loss is ', loss_value)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
-
+        if count > 5:
+          break
+        count += 1
 
 # don't call grad and loss here, just get nms from model and pass to comp_nms_gt()
 def test():

@@ -189,7 +189,7 @@ def convert():
                 obj_vectors = []
                 for i in range(num_objects):
                     label = camera_labels.labels[i]
-                    l = [0] * 10
+                    l = [0] * params.true_vec_len
                     l[0] = label.box.center_x
                     if label.box.center_x > max_x:
                         max_x = label.box.center_x
@@ -199,16 +199,16 @@ def convert():
                     l[2] = label.box.width
                     l[3] = label.box.length
                     #l[4] = 1 # objectness score
-                    if label.type == 'TYPE_PEDESTRIAN':
-                        l[4] = 0
-                    elif label.type == 'TYPE_VEHICLE':
-                        l[4] = 1
-                    elif label.type == 'TYPE_CYCLIST':
-                        l[4] = 2
-                    elif label.type == 'TYPE_SIGN':
-                        l[4] = 3
+                    if label.type == 1:
+                        l[4] = params.TYPE_PEDESTRIAN
+                    elif label.type == 2:
+                        l[4] = params.TYPE_VEHICLE
+                    elif label.type == 3:
+                        l[4] = params.TYPE_CYCLIST
+                    elif label.type == 4:
+                        l[4] = params.TYPE_SIGN
                     else:
-                        l[4] = 4
+                        l[4] = params.TYPE_UNKNOWN
                     obj_vectors.append(l)
                 
                 #draw_orig_image(image, obj_vectors, count)

@@ -67,13 +67,14 @@ class DetectNet(layers.Layer):
         #x = self.dropout(x)
         #x = self.linear_2(x)
 
-        x = DetectNet.predict_transform(x)
+        # x = DetectNet.predict_transform(x)
         # now it should have anchors for (60 x 40 x 16)
 
         # this will filter 4800 boxes down to 1 box per object, output likely (3 x 7) or something
         # 8 to 7 b/c removes class probs for non predicted objects and adds class index for predicted object
         filtered_output = None
         if not self.training:
+            x = DetectNet.predict_transform(x)
             filtered_output = DetectNet.filter_boxes(x)
         return x, filtered_output
 
@@ -134,8 +135,8 @@ class DetectNet(layers.Layer):
     # predictions will be (batch, grid_height, grid_width, num_anchors * vec_len)
     @staticmethod
     def predict_transform(predictions):
-        predictions = tf.reshape(predictions, [params.batch_size, params.grid_height, params.grid_width, params.num_anchors, params.vec_len])
-    
+        predictions = tf.reshape(predictions, [params.batch_size, params.grid_height, params.grid_width, params.num_anchors, params.pred_vec_len])
+
         conv_dims = predictions.shape[1:3]
         conv_height_index = tf.keras.backend.arange(0, stop=conv_dims[0])
         conv_width_index = tf.keras.backend.arange(0, stop=conv_dims[1])
@@ -152,7 +153,7 @@ class DetectNet(layers.Layer):
         center_coords = (center_coords + conv_index) / conv_dims
 
         # makes the objectness score a probability between 0 and 1
-        obj_scores = tf.math.sigmoid(predictions[...,4])
+        obj_scores = tf.math.sigmoid(predictions[...,4:5])
         
         anchors = DetectNet.get_anchors()
         anchors = tf.reshape(anchors, [1, 1, 1, params.num_anchors, 2])
