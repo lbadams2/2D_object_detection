@@ -135,7 +135,7 @@ class DetectNet(layers.Layer):
     # predictions will be (batch, grid_height, grid_width, num_anchors * vec_len)
     @staticmethod
     def predict_transform(predictions):
-        predictions = tf.reshape(predictions, [params.batch_size, params.grid_height, params.grid_width, params.num_anchors, params.pred_vec_len])
+        predictions = tf.reshape(predictions, [-1, params.grid_height, params.grid_width, params.num_anchors, params.pred_vec_len])
 
         conv_dims = predictions.shape[1:3]
         conv_height_index = tf.keras.backend.arange(0, stop=conv_dims[0])
