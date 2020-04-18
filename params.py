@@ -1,7 +1,7 @@
 import numpy as np
 
 ########## Hyper Parameters ##################
-batch_size = 16
+batch_size = 32
 epochs = 10
 kernel_size = 3
 pool_size = 2
@@ -32,9 +32,9 @@ num_classes = 5
 pred_vec_len = 5 + num_classes
 true_vec_len = 5
 
-TYPE_PEDESTRIAN = 0
+TYPE_UNKNOWN = 0
 TYPE_VEHICLE = 1
-TYPE_CYCLIST = 2
+TYPE_PEDESTRIAN = 2
 TYPE_SIGN = 3
-TYPE_UNKNOWN = 4
+TYPE_CYCLIST = 4
 ####################################

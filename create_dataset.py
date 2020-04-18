@@ -87,7 +87,7 @@ def create_true_box_grid(y):
 
             intersect_mins = np.maximum(box_min, anchor_min)
             intersect_maxes = np.minimum(box_max, anchor_max)
-            intersect_wh = np.maximum(intersect_maxes - intersect_mins, 0)
+            intersect_wh = np.maximum(intersect_maxes - intersect_mins, 0) # will be positive, subtracting negative
             intersect_area = intersect_wh[0] * intersect_wh[1]
             box_area = box[2] * box[3]
             anchor_area = anchor[0] * anchor[1]
@@ -100,8 +100,8 @@ def create_true_box_grid(y):
         if best_iou > 0:
             adjusted_box = np.array(
                 [
-                    box[0] - i, # center should be between 0 and 1, like prediction will be
-                    box[1] - j,
+                    box[0] - j, # center should be between 0 and 1, like prediction will be
+                    box[1] - i,
                     np.log(box[2] / anchors[best_anchor][0]), # quotient might be less than one, not sure why log is used
                     np.log(box[3] / anchors[best_anchor][1]),
                     box[4] # class label
@@ -110,7 +110,6 @@ def create_true_box_grid(y):
             )
             true_box_grid[i, j, best_anchor] = adjusted_box
             box_mask[i, j, best_anchor] = mask_vec
-        
     # could pad to 1920 x 1920 with 0s then resize to 416 x 416
     
     return true_box_grid, box_mask
@@ -130,11 +129,11 @@ def image_example(image_string, obj_vectors):
     boxes = tf.train.FeatureLists(feature_list=box_dict)
 
     objs = np.array(obj_vectors)
-    true_box_grid, box_mask = create_true_box_grid(objs)
-    print('grid shape ', true_box_grid.shape)
+    true_box_grid, box_mask = create_true_box_grid(objs, count)
+    #print('grid shape ', true_box_grid.shape)
     true_box_grid_flat = true_box_grid.reshape(-1)
-    print('flattened shape ', true_box_grid_flat.shape)
-    print('')
+    #print('flattened shape ', true_box_grid_flat.shape)
+    #print('')
     true_box_mask_flat = box_mask.reshape(-1)
 
     box_grid_feature = tf.train.Feature(float_list=tf.train.FloatList(value=true_box_grid_flat))
@@ -149,8 +148,8 @@ def image_example(image_string, obj_vectors):
         context=fixed_features,
         feature_lists=boxes
     )
-    if len(obj_vectors) > 0:
-        print(example)
+    #if len(obj_vectors) > 0:
+    #    print(example)
     return example
 
 
@@ -200,27 +199,27 @@ def convert():
                     l[3] = label.box.length
                     #l[4] = 1 # objectness score
                     if label.type == 1:
-                        l[4] = params.TYPE_PEDESTRIAN
-                    elif label.type == 2:
                         l[4] = params.TYPE_VEHICLE
+                    elif label.type == 2:
+                        l[4] = params.TYPE_PEDESTRIAN
                     elif label.type == 3:
-                        l[4] = params.TYPE_CYCLIST
-                    elif label.type == 4:
                         l[4] = params.TYPE_SIGN
+                    elif label.type == 4:
+                        l[4] = params.TYPE_CYCLIST
                     else:
                         l[4] = params.TYPE_UNKNOWN
                     obj_vectors.append(l)
                 
                 #draw_orig_image(image, obj_vectors, count)
                 count += 1
-                ex = image_example(image_obj.image, obj_vectors)
+                ex = image_example(image_obj.image, obj_vectors, count)
                 examples.append(ex)
 
-    print('max x ', max_x)    
-    print('max y', max_y)
-    with tf.io.TFRecordWriter(record_file) as writer:
-        for ex in examples:            
-            writer.write(ex.SerializeToString())   
+    #print('max x ', max_x)    
+    #print('max y', max_y)
+    #with tf.io.TFRecordWriter(record_file) as writer:
+    #    for ex in examples:            
+    #        writer.write(ex.SerializeToString())   
 
     #print('outer for loop {} times'.format(count))
     #y = tf.ragged.constant(img_boxes)
@@ -229,12 +228,12 @@ def convert():
 
 
 def draw_image(image, labels, num):
-    image = tf.image.decode_jpeg(image)
+    #image = tf.image.decode_jpeg(image)
     #print(image)
-    vecs = tf.sparse.to_dense(labels)
-    if len(vecs.shape) > 2:
-        vecs = tf.squeeze(vecs, 0)
-
+    #vecs = tf.sparse.to_dense(labels)
+    #if len(vecs.shape) > 2:
+    #    vecs = tf.squeeze(vecs, 0)
+    vecs = labels
     for i in range(vecs.shape[0]):
         vec = vecs[i].numpy()
         plt.gca().add_patch(patches.Rectangle(
@@ -259,18 +258,88 @@ def convert_to_string(image):
     print(image)
 
 
+def test_format_data(image, true_box_grid, mask_grid, labels):
+    image = tf.image.decode_jpeg(image)
+    true_box_grid = tf.reshape(true_box_grid, [params.grid_height, params.grid_width, params.num_anchors, params.true_vec_len])
+    mask_grid = tf.reshape(mask_grid, [params.grid_height, params.grid_width, params.num_anchors, 2])
+    vecs = tf.sparse.to_dense(labels)
+    return image, true_box_grid, mask_grid, vecs
+
+
+def gather_grid_boxes(dataset):
+    # add grid offsets, divide by conv_size, then multiply by orig size to get original coord values
+    conv_size = np.array([params.grid_width, params.grid_height, params.grid_width, params.grid_height])
+    orig_size = np.array([params.im_width, params.im_height, params.im_width, params.im_height])
+    anchors = DetectNet.get_anchors()
+    count = 0
+    for img, true_box_grid, box_mask, true_boxes in dataset:        
+        num_objs = true_boxes.shape[0]
+        count += 1
+        if num_objs == 0:
+            continue
+        orig_boxes = true_boxes[:,:4] / orig_size
+        orig_boxes = orig_boxes * conv_size
+        i = np.floor(orig_boxes[:,1]).astype('int') # row, y coord
+        j = np.floor(orig_boxes[:,0]).astype('int') # column, x coord
+        if num_objs > 1:
+            zero = tf.zeros_like(true_box_grid)
+            # where will be same shape as true_box_grid with true or false in each cell if not equal to zero
+            # can use []
+            where = tf.not_equal(true_box_grid, zero)            
+            indices = tf.where(where)
+            grid_indices = indices[:,:3] # grid and anchors of boxes, will be duplicates for each vec elem
+            #t1d = tf.reshape(grid_indices, shape=(-1,))
+            #uniques, idx, counts = tf.unique_with_counts(t1d)
+            #idx = tf.reshape(idx, shape=tf.shape(grid_indices)) # don't need this
+            uniques = np.unique(grid_indices.numpy(), axis=0) # tensorflow can't do this
+            uniques = tf.convert_to_tensor(uniques)
+
+            grid_offsets = uniques[:,:2]
+            grid_offsets = tf.cast(grid_offsets, tf.float32)
+            anchor_idx = uniques[:,2]
+            # grid_vec coords are (j, i)/(x,y) tensor dims are (i, j)/(y,x)
+            x_offset = grid_offsets[:,1]
+            y_offset = grid_offsets[:,0]
+            x_offset = tf.expand_dims(x_offset, 1)
+            y_offset = tf.expand_dims(y_offset, 1)
+            grid_offsets = tf.concat([x_offset, y_offset], axis=1)
+            # gather indices of true box grid
+            grid_vectors = tf.gather_nd(true_box_grid, uniques)            
+            center_coords = grid_vectors[:,:2]
+            center_coords = center_coords + grid_offsets
+            wh_coords = grid_vectors[:,2:4]
+            anchor = tf.gather(anchors, anchor_idx)            
+            wh_coords = tf.math.exp(wh_coords)
+            wh_coords = wh_coords * anchor
+            if len(center_coords.shape) < 2:
+                center_coords = tf.expand_dims(center_coords, 0)
+                wh_coords = tf.expand_dims(wh_coords, 0)
+            orig_grid_vectors = tf.concat([center_coords, wh_coords], axis=1)
+            orig_grid_vectors = orig_grid_vectors / conv_size
+            orig_grid_vectors = orig_grid_vectors * orig_size
+            draw_image(img, orig_grid_vectors, count)
+        else:
+            continue
+            #print('no objects')
+
+
 def test_grid_dataset():
     dataset = tf.data.TFRecordDataset('image_grid_dataset_train.tfrecord')
     dataset = dataset.map(train._parse_image_function)
+    dataset = dataset.map(test_format_data)
+    gather_grid_boxes(dataset)
+
+    '''
     # need to draw image before format data
     i = 0
     for img, _, _, true_boxes in dataset:
         draw_image(img, true_boxes, i)
         i += 1
     dataset = dataset.map(train.format_data)
-    
+    '''
     #dataset = dataset.map(train.remove_orig_boxes)
 
+    '''
     i = 0
     for img, true_box_grid, box_mask, true_boxes in dataset:
         num_objs = true_boxes.shape[0]
@@ -284,10 +353,11 @@ def test_grid_dataset():
             print('objs not equal {} {} {}'.format(num_grid_objs, num_true_objs, i))
         draw_orig_image(img, true_boxes, i)
         i += 1
+    '''
 
 
 
 if __name__ == '__main__':
-    convert() # this creates the tfrecord file
-    #test_grid_dataset()
+    #convert() # this creates the tfrecord file
+    test_grid_dataset()
     #convert_test()
