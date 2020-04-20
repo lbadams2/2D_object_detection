@@ -7,18 +7,68 @@ import params
 import create_dataset
 
 
+# true box mask is 2-dim
+def debug_output(true_box_grid, true_box_mask, pred_class_probs, pred_coords):
+    zero = tf.zeros_like(true_box_grid)
+    # where will be same shape as true_box_grid with true or false in each cell if not equal to zero
+    # can use []
+    where = tf.not_equal(true_box_grid, zero)            
+    indices = tf.where(where)
+    grid_indices = indices[:,:3]
+    print('debug function - number of objects should be number of non zero values divided by 5 - number of objects in entire batch')
+    print('number of non zero values true box grid using zero mask', grid_indices.shape)
+    print('')
+
+    expanded_mask = tf.tile(true_box_mask, [1,1,1,1,3])
+    expanded_mask = expanded_mask[...,:5]
+    masked_grid = true_box_grid * expanded_mask
+    where = tf.not_equal(masked_grid, zero)
+    indices = tf.where(where)
+    grid_mask_indices = indices[:,:3]
+    print('number of non zero values true box grid using true box mask', grid_mask_indices.shape)
+    print('')
+
+    test_probs = true_box_mask[..., :1] * pred_class_probs
+    where = tf.not_equal(test_probs, zero)
+    indices = tf.where(where)
+    pred_prob_indices = indices[:,:3]
+    print('number of non zero values pred class probs using true box mask', pred_prob_indices.shape)
+    print('')
+
+    print('number of objects for coords should be number of non zero values divided by 4, coord vec len 4, not 5 like previous 3')
+    zero = tf.zeros_like(pred_coords)
+    test_coords = true_box_mask[..., :1] * pred_coords
+    where = tf.not_equal(test_coords, zero)
+    indices = tf.where(where)
+    pred_coord_indices = indices[:,:3]
+    print('number of non zero values pred class probs using true box mask', pred_coord_indices.shape)
+    print('')
+
+    print('printing (6,6,2) true vector of first image in batch')
+    print(true_box_grid[0,6,6,2,:])
+    print('')
+
+    print('printing (6,6,2) pred class probs vector of first image in batch')
+    print(pred_class_probs[0,6,6,2,:])
+    print('')
+
+    print('printing (6,6,2) pred coords vector of first image in batch')
+    print(pred_coords[0,6,6,2,:])
+
+
+
 # only penalize classification grid cell using SSE
 # only penalize coordinate loss if object present in grid cell and box responsible for that object
 # for cells with no object penalize classification score using SSE
 # for boxes in grid cell that aren't responsible for object (only 1 if 2 anchor boxes) do SSE on object confidence score
 # sum losses for all grid cells
-def loss(model, x, true_box_grid, true_box_mask, training):
+def loss(model, x, true_box_grid, true_box_mask, training, count):
     # training=training is needed only if there are layers with different
     # behavior during training versus inference (e.g. Dropout).
     y_, _ = model(x, training=training)
     # (batch, rows, cols, anchors, vals)
     center_coords, wh_coords, obj_scores, class_probs = DetectNet.predict_transform(y_)
-    total_loss = 0
+    total_loss = 0    
 
     pred_wh_half = wh_coords / 2.
     # bottom left corner
@@ -69,6 +119,10 @@ def loss(model, x, true_box_grid, true_box_mask, training):
 
     # keras_yolo does a sigmoid on center_coords here but they should already be between 0 and 1 from predict_transform
     pred_boxes = tf.concat([center_coords, wh_coords], axis=-1)
+    
+    if count % 15 == 0:
+        debug_output(true_box_grid, true_box_mask, class_probs, pred_boxes)
+    
     matching_boxes = true_box_grid[..., :4]
     coord_loss = params.coord_loss_weight * true_box_mask[..., :1] * tf.math.square(matching_boxes - pred_boxes)
 
@@ -82,9 +136,9 @@ def loss(model, x, true_box_grid, true_box_mask, training):
     return total_loss
 
 
-def grad(model, inputs, true_box_grid, box_mask):
+def grad(model, inputs, true_box_grid, box_mask, count):
     with tf.GradientTape() as tape:
-        loss_value = loss(model, inputs, true_box_grid, box_mask, training=True)
+        loss_value = loss(model, inputs, true_box_grid, box_mask, True, count)
     return loss_value, tape.gradient(loss_value, model.trainable_variables)
 
 
@@ -153,11 +207,9 @@ def train():
     count = 0
     for x, true_box_grid, box_mask in dataset:
         #print(x.shape, true_box_grid.shape, box_mask.shape)
-        loss_value, grads = grad(model, x, true_box_grid, box_mask)
+        loss_value, grads = grad(model, x, true_box_grid, box_mask, count)
         print('train loss is ', loss_value)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
-        if count > 5:
-          break
         count += 1
 
 # don't call grad and loss here, just get nms from model and pass to comp_nms_gt()
