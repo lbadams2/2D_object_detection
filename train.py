@@ -200,7 +200,7 @@ def get_dataset():
 
 # each object in training image is assigned to grid cell that contains object's midpoint
 # and anchor box for the grid cell with highest IOU
-def train_tf():
+def train():
     dataset = get_dataset()
     '''
     VAL_FILENAME = 'data/validation/segment-272435602399417322_2884_130_2904_130_with_camera_labels.tfrecord'
@@ -209,11 +209,7 @@ def train_tf():
     total_val = len(val_dataset)
     '''
 
-    model = DetectNet(True)
-    #model.compile(optimizer='adam',
-    #              loss = 'mse',
-    #              metrics=['accuracy'])
-
+    model = create_model()
     optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
     # to get validation stats need to do nms during training also, return result of nms in addition to all boxes
     # then check iou of each nms box with each ground truth from val set, if above threshold compare classification, use comp_nms_gt()
@@ -274,4 +270,4 @@ def print_results(model, dataset):
     plt.show()
 
 if __name__ == '__main__':
-    train_keras()
+    train()

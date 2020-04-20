@@ -32,26 +32,27 @@ In order to filter 4800 boxes down to 1, throw out all boxes below some fixed ob
 
 def create_model():
     model = models.Sequential()
+    model.add(Conv2D(8, 3, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
+    model.add(BatchNormalization())
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(MaxPool2D())
+    model.add(Conv2D(16, 3, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
+    model.add(BatchNormalization())
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(MaxPool2D())
+
+    model.add(Conv2D(32, 3, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
+    model.add(BatchNormalization())
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(Conv2D(16, 1, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
+    model.add(BatchNormalization())
+    model.add(LeakyReLU(alpha=0.1))
     model.add(Conv2D(32, 3, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
     model.add(BatchNormalization())
     model.add(LeakyReLU(alpha=0.1))
     model.add(MaxPool2D())
-    model.add(Conv2D(64, 3, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
-    model.add(BatchNormalization())
-    model.add(LeakyReLU(alpha=0.1))
-    model.add(MaxPool2D())
 
-    model.add(Conv2D(128, 3, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
-    model.add(BatchNormalization())
-    model.add(LeakyReLU(alpha=0.1))
-    model.add(Conv2D(64, 1, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
-    model.add(BatchNormalization())
-    model.add(LeakyReLU(alpha=0.1))
-    model.add(Conv2D(128, 3, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
-    model.add(BatchNormalization())
-    model.add(LeakyReLU(alpha=0.1))
-    model.add(MaxPool2D())
-
+    '''
     model.add(Conv2D(256, 3, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
     model.add(BatchNormalization())
     model.add(LeakyReLU(alpha=0.1))
@@ -61,64 +62,17 @@ def create_model():
     model.add(Conv2D(256, 3, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
     model.add(BatchNormalization())
     model.add(LeakyReLU(alpha=0.1))
+    '''
 
-    model.add(layers.Flatten())
+    model.add(Flatten())
     model.add(Dense(params.grid_height * params.grid_width * params.pred_vec_len * params.num_anchors, activation='relu'))
 
-    return model
+    return model    
 
 
 
 # could resize image to make it square
-class DetectNet(layers.Layer):
-    def __init__(self, training):
-        super(DetectNet, self).__init__()
-        self.training = training
-
-        # conv2D args are filters, kernel_size, ...
-        # filters is number of output channels
-        # channels_last means input is (batch, height, width, channels), stride defaults to 1
-        self.conv_1 = Conv2D(32, params.grid_stride, padding='same', data_format='channels_last', activation='relu', kernel_regularizer=l2(5e-4))
-        self.pool_1 = MaxPool2D() # pool size defaults to 2, stride is none
-        self.conv_2 = Conv2D(32, params.grid_stride, padding='same', data_format='channels_last', activation='relu', kernel_regularizer=l2(5e-4))
-        self.pool_2 = MaxPool2D()
-        self.conv_3 = Conv2D(32, params.grid_stride, padding='same', data_format='channels_last', activation='relu', kernel_regularizer=l2(5e-4))
-        self.flatten_layer = Flatten()
-        self.dropout = Dropout(0.4)
-        self.linear_1 = Dense(params.grid_height * params.grid_width * params.pred_vec_len * params.num_anchors, activation='relu')
-        #self.linear_2 = Dense(params.vec_len) # 4 coordinates, objectness score, 3 class probs
-        # output here should be (batch_sz, height/grid_stride, width/grid_stride, num_anchors * vec_len
-
-
-
-    # img should be np image array (1920 x 1280 x 3)
-    def call(self, img):
-        x = self.conv_1(img) # x is (16, 625, 945, 32) get_new_dim correct
-        #x = tf.nn.relu(x)
-        x = self.pool_1(x) # x is (16, 312, 472, 32) get_new_dim correct
-        x = self.conv_2(x) # x is (16, 104, 157, 64) get_new_dim correct
-        #x = tf.nn.relu(x)
-        x = self.pool_2(x) # x is (16, 52, 78, 64) correct
-        x = self.conv_3(x) # x is (16, 17, 26, 128)
-        #x = tf.nn.relu(x)        
-        x = self.flatten_layer(x) # x is (16, 56576) here
-        x = self.dropout(x)
-        x = self.linear_1(x)
-        #x = self.dropout(x)
-        #x = self.linear_2(x)
-
-        # x = DetectNet.predict_transform(x)
-        # now it should have anchors for (60 x 40 x 16)
-
-        # this will filter 4800 boxes down to 1 box per object, output likely (3 x 7) or something
-        # 8 to 7 b/c removes class probs for non predicted objects and adds class index for predicted object
-        filtered_output = None
-        if not self.training:
-            x = DetectNet.predict_transform(x)
-            filtered_output = DetectNet.filter_boxes(x)
-        return x, filtered_output
-
-
+class DetectNet():
     @staticmethod
     def get_new_dim(input_dim, kern_sz, pdng, strd):
         new_dim = int((input_dim - kern_sz + 2*pdng) / strd) + 1
@@ -202,7 +156,7 @@ class DetectNet(layers.Layer):
         wh_coords = (tf.math.exp(predictions[...,2:4])*anchors) / conv_dims
 
         # apply sigmoid to class scores to make them probabilities
-        class_probs = tf.math.sigmoid(predictions[..., 5 : 5 + params.num_classes])
+        class_probs = tf.keras.activations.softmax(predictions[..., 5 : 5 + params.num_classes])
         
         # (batch, rows, cols, anchors, vals)
         return center_coords, wh_coords, obj_scores, class_probs
