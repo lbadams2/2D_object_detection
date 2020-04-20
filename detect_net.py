@@ -1,7 +1,10 @@
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Conv2D, Flatten, Dropout, MaxPool2D
-from tensorflow.keras import layers
+from tensorflow.keras import layers, models
 import tensorflow.keras.backend as K
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.layers.normalization import BatchNormalization
+from tensorflow.keras.layers.advanced_activations import LeakyReLU
 import tensorflow as tf
 import numpy as np
 import params
@@ -29,6 +32,43 @@ In order to filter 4800 boxes down to 1, throw out all boxes below some fixed ob
 '''
 
 
+def create_model():
+    model = models.Sequential()
+    model.add(Conv2D(32, 3, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
+    model.add(BatchNormalization())
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(MaxPool2D())
+    model.add(Conv2D(64, 3, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
+    model.add(BatchNormalization())
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(MaxPool2D())
+
+    model.add(Conv2D(128, 3, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
+    model.add(BatchNormalization())
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(Conv2D(64, 1, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
+    model.add(BatchNormalization())
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(Conv2D(128, 3, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
+    model.add(BatchNormalization())
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(MaxPool2D())
+
+    model.add(Conv2D(256, 3, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
+    model.add(BatchNormalization())
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(Conv2D(128, 1, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
+    model.add(BatchNormalization())
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(Conv2D(256, 3, padding='same', data_format='channels_last', kernel_regularizer=l2(5e-4)))
+    model.add(BatchNormalization())
+    model.add(LeakyReLU(alpha=0.1))
+
+    model.add(layers.Flatten())
+    model.add(Dense(params.grid_height * params.grid_width * params.pred_vec_len * params.num_anchors, activation='relu'))
+    
+
+
 # could resize image to make it square
 class DetectNet(layers.Layer):
     def __init__(self, training):
@@ -37,12 +77,12 @@ class DetectNet(layers.Layer):
 
         # conv2D args are filters, kernel_size, ...
         # filters is number of output channels
-        # channels_last means input is (batch, height, width, channels)
-        self.conv_1 = Conv2D(32, params.grid_stride, strides=2, padding='valid', data_format='channels_last', activation='relu')
-        self.pool_1 = MaxPool2D(pool_size=params.pool_size)
-        self.conv_2 = Conv2D(64, params.kernel_size, strides=params.kernel_size, padding='valid', data_format='channels_last', activation='relu')
-        self.pool_2 = MaxPool2D(pool_size=params.pool_size)
-        self.conv_3 = Conv2D(128, params.kernel_size, strides=params.kernel_size, padding='valid', data_format='channels_last', activation='relu')
+        # channels_last means input is (batch, height, width, channels), stride defaults to 1
+        self.conv_1 = Conv2D(32, params.grid_stride, padding='same', data_format='channels_last', activation='relu', kernel_regularizer=l2(5e-4))
+        self.pool_1 = MaxPool2D() # pool size defaults to 2, stride is none
+        self.conv_2 = Conv2D(32, params.grid_stride, padding='same', data_format='channels_last', activation='relu', kernel_regularizer=l2(5e-4))
+        self.pool_2 = MaxPool2D()
+        self.conv_3 = Conv2D(32, params.grid_stride, padding='same', data_format='channels_last', activation='relu', kernel_regularizer=l2(5e-4))
         self.flatten_layer = Flatten()
         self.dropout = Dropout(0.4)
         self.linear_1 = Dense(params.grid_height * params.grid_width * params.pred_vec_len * params.num_anchors, activation='relu')

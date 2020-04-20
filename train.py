@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
 
-from detect_net import DetectNet
+from detect_net import DetectNet, create_model
 import params
 
 
@@ -186,9 +186,7 @@ def remove_orig_boxes(image, true_box_grid, mask_grid, labels):
     return image, true_box_grid, mask_grid
 
 
-# each object in training image is assigned to grid cell that contains object's midpoint
-# and anchor box for the grid cell with highest IOU
-def train():
+def get_dataset():
     FILENAME = 'image_grid_dataset_train.tfrecord'
     dataset = tf.data.TFRecordDataset(FILENAME)   
     dataset = dataset.map(_parse_image_function)
@@ -196,6 +194,14 @@ def train():
 
     dataset = dataset.map(remove_orig_boxes)
     dataset = dataset.batch(params.batch_size)
+    dataset = dataset.shuffle(params.batch_size * 2)
+    return dataset
+
+
+# each object in training image is assigned to grid cell that contains object's midpoint
+# and anchor box for the grid cell with highest IOU
+def train():
+    dataset = get_dataset()
     '''
     VAL_FILENAME = 'data/validation/segment-272435602399417322_2884_130_2904_130_with_camera_labels.tfrecord'
     val_dataset = tf.data.TFRecordDataset(VAL_FILENAME, compression_type='')
@@ -219,6 +225,16 @@ def train():
         print('train loss is ', loss_value)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
         count += 1
+
+
+def train_keras():
+    dataset = get_dataset()
+    model = create_model()
+    model.compile(optimizer='adam',
+              loss=loss)
+
+    history = model.fit(dataset, epochs=10)
+
 
 # don't call grad and loss here, just get nms from model and pass to comp_nms_gt()
 def test():
