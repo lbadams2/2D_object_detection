@@ -1,10 +1,8 @@
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Conv2D, Flatten, Dropout, MaxPool2D
+from tensorflow.keras.layers import Dense, Conv2D, Flatten, Dropout, MaxPool2D, BatchNormalization, LeakyReLU
 from tensorflow.keras import layers, models
 import tensorflow.keras.backend as K
 from tensorflow.keras.regularizers import l2
-from tensorflow.keras.layers.normalization import BatchNormalization
-from tensorflow.keras.layers.advanced_activations import LeakyReLU
 import tensorflow as tf
 import numpy as np
 import params
@@ -66,7 +64,9 @@ def create_model():
 
     model.add(layers.Flatten())
     model.add(Dense(params.grid_height * params.grid_width * params.pred_vec_len * params.num_anchors, activation='relu'))
-    
+
+    return model
+
 
 
 # could resize image to make it square

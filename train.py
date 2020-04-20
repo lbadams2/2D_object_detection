@@ -200,7 +200,7 @@ def get_dataset():
 
 # each object in training image is assigned to grid cell that contains object's midpoint
 # and anchor box for the grid cell with highest IOU
-def train():
+def train_tf():
     dataset = get_dataset()
     '''
     VAL_FILENAME = 'data/validation/segment-272435602399417322_2884_130_2904_130_with_camera_labels.tfrecord'
@@ -274,4 +274,4 @@ def print_results(model, dataset):
     plt.show()
 
 if __name__ == '__main__':
-    train()
+    train_keras()
