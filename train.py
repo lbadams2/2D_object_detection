@@ -10,10 +10,9 @@ import params
 def debug_output(true_box_grid, true_box_mask, pred_class_probs, pred_coords):
     zero = tf.zeros_like(true_box_grid)
     # where will be same shape as true_box_grid with true or false in each cell if not equal to zero
-    # can use []
     where = tf.not_equal(true_box_grid, zero)            
     indices = tf.where(where)
-    grid_indices = indices[:,:3]
+    grid_indices = indices[:,:4]
     print('debug function - number of objects should be number of non zero values divided by 5 - number of objects in entire batch')
     print('number of non zero values true box grid using zero mask', grid_indices.shape)
     print('')
@@ -23,14 +22,14 @@ def debug_output(true_box_grid, true_box_mask, pred_class_probs, pred_coords):
     masked_grid = true_box_grid * expanded_mask
     where = tf.not_equal(masked_grid, zero)
     indices = tf.where(where)
-    grid_mask_indices = indices[:,:3]
+    grid_mask_indices = indices[:,:4]
     print('number of non zero values true box grid using true box mask', grid_mask_indices.shape)
     print('')
 
     test_probs = true_box_mask[..., :1] * pred_class_probs
     where = tf.not_equal(test_probs, zero)
     indices = tf.where(where)
-    pred_prob_indices = indices[:,:3]
+    pred_prob_indices = indices[:,:4]
     print('number of non zero values pred class probs using true box mask', pred_prob_indices.shape)
     print('')
 
@@ -39,20 +38,25 @@ def debug_output(true_box_grid, true_box_mask, pred_class_probs, pred_coords):
     test_coords = true_box_mask[..., :1] * pred_coords
     where = tf.not_equal(test_coords, zero)
     indices = tf.where(where)
-    pred_coord_indices = indices[:,:3]
+    pred_coord_indices = indices[:,:4]
     print('number of non zero values pred class probs using true box mask', pred_coord_indices.shape)
     print('')
 
-    print('printing (6,6,2) true vector of first image in batch')
-    print(true_box_grid[0,6,6,2,:])
+    true_vecs = tf.gather_nd(true_box_grid, grid_indices)
+    print('printing one true grid vector with object', grid_indices[0])
+    print(true_vecs[0])
     print('')
 
-    print('printing (6,6,2) pred class probs vector of first image in batch')
-    print(pred_class_probs[0,6,6,2,:])
+    pred_class_vecs = tf.gather_nd(pred_class_probs, grid_indices)
+    print('printing corresponding pred class probs vector', grid_indices[0])
+    print(pred_class_vecs[0])
     print('')
 
-    print('printing (6,6,2) pred coords vector of first image in batch')
-    print(pred_coords[0,6,6,2,:])
+    pred_coord_vecs = tf.gather_nd(pred_coords, grid_indices)
+    print('printing corresponding pred coord vector', grid_indices[0])
+    print(pred_coord_vecs[0])
+    print('')
+    
 
 
 
