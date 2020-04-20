@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 
 from detect_net import DetectNet
 import params
-import create_dataset
 
 
 # true box mask is 2-dim
