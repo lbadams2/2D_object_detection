@@ -57,6 +57,11 @@ def debug_output(true_box_grid, true_box_mask, pred_class_probs, pred_coords):
     print(pred_coord_vecs[0])
     print('')
     
+    uniques, idx, counts = tf.unique_with_counts(true_vecs[:,4])
+    print('object types in batch', uniques)
+    print('object counts by type', counts)
+    print('')
+    
 
 
 
