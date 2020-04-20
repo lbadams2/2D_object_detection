@@ -1,7 +1,7 @@
 import numpy as np
 
 ########## Hyper Parameters ##################
-batch_size = 32
+batch_size = 16
 epochs = 10
 kernel_size = 3
 pool_size = 2
