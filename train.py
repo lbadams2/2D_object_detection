@@ -7,7 +7,7 @@ import params
 
 
 # true box mask is 2-dim
-def debug_output(true_box_grid, true_box_mask, pred_class_probs, pred_coords):
+def debug_output(true_box_grid, pred_class_probs, pred_coords, true_box_mask=None, mem_mask=None):
     zero = tf.zeros_like(true_box_grid)
     # where will be same shape as true_box_grid with true or false in each cell if not equal to zero
     where = tf.not_equal(true_box_grid, zero)            
@@ -17,16 +17,31 @@ def debug_output(true_box_grid, true_box_mask, pred_class_probs, pred_coords):
     print('number of non zero values true box grid using zero mask', grid_indices.shape)
     print('')
 
-    expanded_mask = tf.tile(true_box_mask, [1,1,1,1,3])
-    expanded_mask = expanded_mask[...,:5]
-    masked_grid = true_box_grid * expanded_mask
-    where = tf.not_equal(masked_grid, zero)
-    indices = tf.where(where)
-    grid_mask_indices = indices[:,:4]
-    print('number of non zero values true box grid using true box mask', grid_mask_indices.shape)
-    print('')
+    if true_box_mask is not None:
+        expanded_mask = tf.tile(true_box_mask, [1,1,1,1,3])
+        expanded_mask = expanded_mask[...,:5]
+        masked_grid = true_box_grid * expanded_mask
+        where = tf.not_equal(masked_grid, zero)
+        indices = tf.where(where)
+        grid_mask_indices = indices[:,:4]
+        print('number of non zero values true box grid using true box mask', grid_mask_indices.shape)
+        print('')
 
-    test_probs = true_box_mask[..., :1] * pred_class_probs
+        test_probs = true_box_mask[..., :1] * pred_class_probs
+        test_coords = true_box_mask[..., :1] * pred_coords
+
+    if mem_mask is not None:
+        mem_masked_grid = true_box_grid * mem_mask
+        where = tf.not_equal(mem_masked_grid, zero)
+        indices = tf.where(where)
+        mem_mask_indices = indices[:,:4]
+        print('number of non zero values true box grid using true box mask', grid_mask_indices.shape)
+        print('')
+
+        test_probs = mem_mask[..., :1] * pred_class_probs
+        test_coords = mem_mask[..., :1] * pred_coords
+
+    #test_probs = true_box_mask[..., :1] * pred_class_probs
     where = tf.not_equal(test_probs, zero)
     indices = tf.where(where)
     pred_prob_indices = indices[:,:4]
@@ -35,7 +50,7 @@ def debug_output(true_box_grid, true_box_mask, pred_class_probs, pred_coords):
 
     print('number of objects for coords should be number of non zero values divided by 4, coord vec len 4, not 5 like previous 3')
     zero = tf.zeros_like(pred_coords)
-    test_coords = true_box_mask[..., :1] * pred_coords
+    #test_coords = true_box_mask[..., :1] * pred_coords
     where = tf.not_equal(test_coords, zero)
     indices = tf.where(where)
     pred_coord_indices = indices[:,:4]
@@ -61,7 +76,14 @@ def debug_output(true_box_grid, true_box_mask, pred_class_probs, pred_coords):
     print('object types in batch', uniques)
     print('object counts by type', counts)
     print('')
+
     
+
+def create_mask(true_box_grid):
+    zero = tf.zeros_like(true_box_grid)
+    where = tf.not_equal(true_box_grid, zero)            
+    mask = tf.cast(where, tf.float32)
+    return mask
 
 
 
@@ -70,12 +92,13 @@ def debug_output(true_box_grid, true_box_mask, pred_class_probs, pred_coords):
 # for cells with no object penalize classification score using SSE
 # for boxes in grid cell that aren't responsible for object (only 1 if 2 anchor boxes) do SSE on object confidence score
 # sum losses for all grid cells
-def loss(model, x, true_box_grid, true_box_mask, training, count):
+def loss_custom(x, true_box_grid, model=None, true_box_mask=None, training=True, count=-1):
     # training=training is needed only if there are layers with different
     # behavior during training versus inference (e.g. Dropout).
-    y_, _ = model(x, training=training)
+    y_ = model(x, training=training)
     # (batch, rows, cols, anchors, vals)
     center_coords, wh_coords, obj_scores, class_probs = DetectNet.predict_transform(y_)
+    detector_mask = create_mask(true_box_grid)
     total_loss = 0    
 
     pred_wh_half = wh_coords / 2.
@@ -114,25 +137,99 @@ def loss(model, x, true_box_grid, true_box_mask, training, count):
     object_detections = tf.keras.backend.cast(best_ious > 0.6, dtype=tf.float32)
 
     # for both no obj and obj only calculate loss for boxes that had high ious
-    no_obj_weights = params.noobj_loss_weight * (1 - object_detections) * (1 - true_box_mask[...,:1])
+    no_obj_weights = params.noobj_loss_weight * (1 - object_detections) * (1 - detector_mask[...,:1])
     no_obj_loss = no_obj_weights * tf.math.square(obj_scores)
 
     # could use weight here on obj loss
-    obj_conf_loss = params.obj_loss_weight * true_box_mask[...,:1] * tf.math.square(1 - obj_scores)
+    obj_conf_loss = params.obj_loss_weight * detector_mask[...,:1] * tf.math.square(1 - obj_scores)
     conf_loss = no_obj_loss + obj_conf_loss
 
     matching_classes = tf.cast(true_box_grid[...,4], tf.int32)
     matching_classes = tf.one_hot(matching_classes, params.num_classes)
-    class_loss = true_box_mask[..., :1] * tf.math.square(matching_classes - class_probs)
+    class_loss = detector_mask[..., :1] * tf.math.square(matching_classes - class_probs)
 
     # keras_yolo does a sigmoid on center_coords here but they should already be between 0 and 1 from predict_transform
     pred_boxes = tf.concat([center_coords, wh_coords], axis=-1)
     
     if count % 15 == 0:
-        debug_output(true_box_grid, true_box_mask, class_probs, pred_boxes)
+        debug_output(true_box_grid, class_probs, pred_boxes, true_box_mask, detector_mask)
     
     matching_boxes = true_box_grid[..., :4]
-    coord_loss = params.coord_loss_weight * true_box_mask[..., :1] * tf.math.square(matching_boxes - pred_boxes)
+    coord_loss = params.coord_loss_weight * detector_mask[..., :1] * tf.math.square(matching_boxes - pred_boxes)
+
+    confidence_loss_sum = tf.keras.backend.sum(conf_loss)
+    classification_loss_sum = tf.keras.backend.sum(class_loss)
+    coordinates_loss_sum = tf.keras.backend.sum(coord_loss)
+
+    # not sure why .5 is here, maybe to make sure numbers don't get too large
+    total_loss = 0.5 * (confidence_loss_sum + classification_loss_sum + coordinates_loss_sum)            
+
+    return total_loss
+
+
+def loss_keras(y_, true_box_grid):
+    # training=training is needed only if there are layers with different
+    # behavior during training versus inference (e.g. Dropout).
+    #y_ = model(x, training=training)
+    # (batch, rows, cols, anchors, vals)
+    center_coords, wh_coords, obj_scores, class_probs = DetectNet.predict_transform(y_)
+    detector_mask = create_mask(true_box_grid)
+    total_loss = 0    
+
+    pred_wh_half = wh_coords / 2.
+    # bottom left corner
+    pred_mins = center_coords - pred_wh_half
+    # top right corner
+    pred_maxes = center_coords + pred_wh_half
+
+    true_xy = true_box_grid[..., 0:2]
+    true_wh = true_box_grid[..., 2:4]
+    true_wh_half = true_wh / 2.
+    true_mins = true_xy - true_wh_half
+    true_maxes = true_xy + true_wh_half
+
+    # max bottom left corner
+    intersect_mins = tf.math.maximum(pred_mins, true_mins)
+    # min top right corner
+    intersect_maxes = tf.math.minimum(pred_maxes, true_maxes)    
+    intersect_wh = tf.math.maximum(intersect_maxes - intersect_mins, 0.)
+    # product of difference between x max and x min, y max and y min
+    intersect_areas = intersect_wh[..., 0] * intersect_wh[..., 1]
+
+
+    pred_areas = wh_coords[..., 0] * wh_coords[..., 1]
+    true_areas = true_wh[..., 0] * true_wh[..., 1]
+
+    union_areas = pred_areas + true_areas - intersect_areas
+    iou_scores = intersect_areas / union_areas
+
+    # Best IOUs for each location.
+    iou_scores = tf.expand_dims(iou_scores, 4)
+    best_ious = tf.keras.backend.max(iou_scores, axis=4)  # Best IOU scores.
+    best_ious = tf.expand_dims(best_ious, 4)
+
+    # A detector has found an object if IOU > thresh for some true box.
+    object_detections = tf.keras.backend.cast(best_ious > 0.6, dtype=tf.float32)
+
+    # for both no obj and obj only calculate loss for boxes that had high ious
+    no_obj_weights = params.noobj_loss_weight * (1 - object_detections) * (1 - detector_mask[...,:1])
+    no_obj_loss = no_obj_weights * tf.math.square(obj_scores)
+
+    # could use weight here on obj loss
+    obj_conf_loss = params.obj_loss_weight * detector_mask[...,:1] * tf.math.square(1 - obj_scores)
+    conf_loss = no_obj_loss + obj_conf_loss
+
+    matching_classes = tf.cast(true_box_grid[...,4], tf.int32)
+    matching_classes = tf.one_hot(matching_classes, params.num_classes)
+    class_loss = detector_mask[..., :1] * tf.math.square(matching_classes - class_probs)
+
+    # keras_yolo does a sigmoid on center_coords here but they should already be between 0 and 1 from predict_transform
+    pred_boxes = tf.concat([center_coords, wh_coords], axis=-1)
+    
+    #debug_output(true_box_grid, class_probs, pred_boxes, None, detector_mask)
+    
+    matching_boxes = true_box_grid[..., :4]
+    coord_loss = params.coord_loss_weight * detector_mask[..., :1] * tf.math.square(matching_boxes - pred_boxes)
 
     confidence_loss_sum = tf.keras.backend.sum(conf_loss)
     classification_loss_sum = tf.keras.backend.sum(class_loss)
@@ -146,7 +243,7 @@ def loss(model, x, true_box_grid, true_box_mask, training, count):
 
 def grad(model, inputs, true_box_grid, box_mask, count):
     with tf.GradientTape() as tape:
-        loss_value = loss(model, inputs, true_box_grid, box_mask, True, count)
+        loss_value = loss_custom(inputs, true_box_grid, model, box_mask, True, count)
     return loss_value, tape.gradient(loss_value, model.trainable_variables)
 
 
@@ -184,6 +281,9 @@ def format_data(image, true_box_grid, mask_grid, labels):
 
 def remove_orig_boxes(image, true_box_grid, mask_grid, labels):
     return image, true_box_grid, mask_grid
+
+def remove_mask(image, true_box_grid, mask_grid):
+    return image, true_box_grid
 
 
 def get_dataset():
@@ -225,9 +325,10 @@ def train():
 
 def train_keras():
     dataset = get_dataset()
+    dataset = dataset.map(remove_mask)
     model = create_model()
     model.compile(optimizer='adam',
-              loss=loss)
+              loss=loss_keras)
 
     history = model.fit(dataset, epochs=10)
 
@@ -270,4 +371,4 @@ def print_results(model, dataset):
     plt.show()
 
 if __name__ == '__main__':
-    train()
+    train_keras()
