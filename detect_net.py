@@ -94,36 +94,54 @@ class DetectNet():
         # get bounding boxes from center and wh coords
         box_mins = center_coords - (wh_coords / 2.)
         box_maxes = center_coords + (wh_coords / 2.)
-        boxes = K.concatenate([
+        batch_boxes = K.concatenate([
             box_mins[..., 1:2],
             box_mins[..., 0:1],
             box_maxes[..., 1:2],
             box_maxes[..., 0:1]
         ])
         
+        # print(batch_boxes.shape)
+
         # 0 out all the boxes that have confidence less than object_conf param
         box_scores = obj_scores * class_probs
         box_classes = K.argmax(box_scores, axis=-1)
         box_class_scores = K.max(box_scores, axis=-1)
         prediction_mask = box_class_scores >= params.object_conf
 
-        boxes = tf.boolean_mask(boxes, prediction_mask)
-        scores = tf.boolean_mask(box_class_scores, prediction_mask)
-        classes = tf.boolean_mask(box_classes, prediction_mask)
-        
-        # scale bounding boxes to image size
-        image_dims = K.stack([params.im_height, params.im_width, params.im_height, params.im_width])
-        image_dims = K.reshape(image_dims, [1, 4])
-        boxes = boxes * image_dims
+        # print('mask', box_scores.shape, box_classes.shape, box_class_scores.shape, prediction_mask.shape)
 
-        # non-max-suppression
+        image_dims = K.stack([params.scaled_height, params.scaled_width, params.scaled_height, params.scaled_width])
+        image_dims = K.cast(K.reshape(image_dims, [1, 4]), dtype='float32')
         max_boxes_tensor = K.variable(params.max_boxes, dtype='int32')
-        nms_index = tf.image.non_max_suppression(boxes, scores, max_boxes_tensor, iou_threshold=params.nms_conf)
-        boxes = K.gather(boxes, nms_index)
-        scores = K.gather(scores, nms_index)
-        classes = K.gather(classes, nms_index)
         
-        return boxes, scores, classes
+        pred_boxes = []
+        pred_scores = []
+        pred_classes = []
+
+        # loop through batch
+        for mask, box, score, cls in zip(prediction_mask, batch_boxes, box_class_scores, box_classes):
+            boxes = tf.boolean_mask(box, mask)
+            scores = tf.boolean_mask(score, mask)
+            classes = tf.boolean_mask(cls, mask)
+        
+            # print(boxes.shape, scores.shape, classes.shape)
+
+            # scale bounding boxes to image size
+            boxes = boxes * image_dims
+
+            # non-max-suppression  
+            nms_index = tf.image.non_max_suppression(boxes, scores, max_boxes_tensor, iou_threshold=params.nms_conf)
+            boxes = K.gather(boxes, nms_index)
+            scores = K.gather(scores, nms_index)
+            classes = K.gather(classes, nms_index)
+            
+            pred_boxes.append(boxes)
+            pred_scores.append(scores)
+            pred_classes.append(classes)
+            
+        return np.array(pred_boxes), np.array(pred_scores), np.array(pred_classes)
+
 
 
     # predictions will be (batch, grid_height, grid_width, num_anchors * vec_len)
