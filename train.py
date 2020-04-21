@@ -35,7 +35,7 @@ def debug_output(true_box_grid, pred_class_probs, pred_coords, true_box_mask=Non
         where = tf.not_equal(mem_masked_grid, zero)
         indices = tf.where(where)
         mem_mask_indices = indices[:,:4]
-        print('number of non zero values true box grid using true box mask', grid_mask_indices.shape)
+        print('number of non zero values true box grid using mem mask', grid_mask_indices.shape)
         print('')
 
         test_probs = mem_mask[..., :1] * pred_class_probs

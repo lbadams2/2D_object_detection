@@ -83,7 +83,7 @@ class DetectNet():
     @staticmethod
     def get_anchors():
         #anchors = tf.convert_to_tensor(params.YOLO_ANCHORS, np.float32)
-        anchors = tf.Variable(params.YOLO_ANCHORS, dtype=tf.float32)
+        anchors = tf.constant(params.YOLO_ANCHORS, dtype=tf.float32)
         return anchors
 
 
