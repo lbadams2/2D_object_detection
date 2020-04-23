@@ -28,7 +28,67 @@ The objectness score for a box responsible for and object and boxes surrounding 
 should be closer to 0.
 In order to filter 4800 boxes down to 1, throw out all boxes below some fixed objectness score threshold
 '''
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, ZeroPadding2D, Add, UpSampling2D, Concatenate, BatchNormalization, LeakyReLU, Input, Lambda
+from tensorflow.keras.regularizers import l2
+from functools import wraps, reduce
+import tensorflow.keras.backend as K
 
+def compose(*funcs):
+    """Compose arbitrarily many functions, evaluated left to right.
+    Reference: https://mathieularose.com/function-composition-in-python/
+    """
+    # return lambda x: reduce(lambda v, f: f(v), funcs, x)
+    if funcs:
+        return reduce(lambda f, g: lambda *a, **kw: g(f(*a, **kw)), funcs)
+    else:
+        raise ValueError('Composition of empty sequence not supported.')
+
+@wraps(Conv2D)
+def DarknetConv2D(*args, **kwargs):
+    """Wrapper to set Darknet parameters for Convolution2D"""
+    darknet_conv_kwargs = {'kernel_regularizer': l2(5e-4)}
+    darknet_conv_kwargs['padding'] = 'same'
+    darknet_conv_kwargs.update(kwargs)
+    return Conv2D(*args, **darknet_conv_kwargs)
+
+def  DarknetConv2D_BN_Leaky(*args, **kwargs):
+    """Darknet Convolution with Batch Normalization and LeakyReLU"""
+    no_bias_kwargs = {'use_bias':False}
+    no_bias_kwargs.update(kwargs)
+    return compose(
+        DarknetConv2D(*args, **no_bias_kwargs),
+        BatchNormalization(),
+        LeakyReLU(alpha=0.1))
+
+def yolo_body(inputs, num_anchors, num_classes):
+    """Create YOLO model body"""
+    x1 = compose(
+                DarknetConv2D_BN_Leaky(16, (3,3)),
+                MaxPooling2D(pool_size=(2,2), strides=(2,2), padding='same'),
+                DarknetConv2D_BN_Leaky(32, (3,3)),
+                MaxPooling2D(pool_size=(2,2), strides=(2,2), padding='same'),
+                DarknetConv2D_BN_Leaky(64, (3,3)),
+                MaxPooling2D(pool_size=(2,2), strides=(2,2), padding='same'),
+                DarknetConv2D_BN_Leaky(128, (3,3)),
+                MaxPooling2D(pool_size=(2,2), strides=(2,2), padding='same'),
+                DarknetConv2D_BN_Leaky(256, (3,3)))(inputs)
+    x2 = compose(
+                MaxPooling2D(pool_size=(2,2), strides=(2,2), padding='same'),
+                DarknetConv2D_BN_Leaky(512, (3,3)),
+                MaxPooling2D(pool_size=(2,2), strides=(1,1), padding='same'),
+                DarknetConv2D_BN_Leaky(1024, (3,3)),
+                DarknetConv2D_BN_Leaky(256, (1,1)))(x1)
+    y = compose(
+                DarknetConv2D_BN_Leaky(512, (3,3)),
+                DarknetConv2D(num_anchors*(num_classes+5), (1,1)))(x2)
+    return Model(inputs, y)
+
+def create_darknet_model():
+    K.clear_session()
+    inputs = Input(shape=(None, None, 3))
+    model = yolo_body(inputs, params.num_anchors, params.num_classes)
+    return model
 
 def create_model():
     model = models.Sequential()

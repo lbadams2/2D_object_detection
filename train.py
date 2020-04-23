@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
 
-from detect_net import DetectNet, create_model
+from detect_net import DetectNet, create_model, create_darknet_model
 import params
 
 
@@ -300,8 +300,7 @@ def get_dataset():
 
 # each object in training image is assigned to grid cell that contains object's midpoint
 # and anchor box for the grid cell with highest IOU
-def train():
-    dataset = get_dataset()
+def train(dataset, model, epochs=1):
     '''
     VAL_FILENAME = 'data/validation/segment-272435602399417322_2884_130_2904_130_with_camera_labels.tfrecord'
     val_dataset = tf.data.TFRecordDataset(VAL_FILENAME, compression_type='')
@@ -309,19 +308,27 @@ def train():
     total_val = len(val_dataset)
     '''
 
-    model = create_model()
-    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
     # to get validation stats need to do nms during training also, return result of nms in addition to all boxes
     # then check iou of each nms box with each ground truth from val set, if above threshold compare classification, use comp_nms_gt()
     #for epoch in range(params.epochs):
-    count = 0
-    for x, true_box_grid, box_mask in dataset:
-        #print(x.shape, true_box_grid.shape, box_mask.shape)
-        loss_value, grads = grad(model, x, true_box_grid, box_mask, count)
-        print('train loss is ', loss_value)
-        optimizer.apply_gradients(zip(grads, model.trainable_variables))
-        count += 1
 
+    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
+    for e in tqdm(range(epochs)):
+      # print('Epoch:{}/{}'.format(e+1, epochs))
+      count = 0
+      for x, true_box_grid, box_mask in dataset:
+          #print(x.shape, true_box_grid.shape, box_mask.shape)
+          loss_value, grads = grad(model, x, true_box_grid, box_mask, count)
+          grads, _ = tf.clip_by_global_norm(grads, 5.0)
+          optimizer.apply_gradients(zip(grads, model.trainable_variables))
+      print('Loss:', loss_value)
+    return model
+
+def main():
+    dataset = get_dataset()
+    model = create_darknet_model()
+    # print(model.summary())
+    model = train(dataset, model, epochs=15)
 
 def train_keras():
     dataset = get_dataset()
@@ -371,4 +378,5 @@ def print_results(model, dataset):
     plt.show()
 
 if __name__ == '__main__':
-    train_keras()
+    # train_keras()
+    main()
