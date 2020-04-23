@@ -120,7 +120,7 @@ def create_mask(true_box_grid):
 # for cells with no object penalize classification score using SSE
 # for boxes in grid cell that aren't responsible for object (only 1 if 2 anchor boxes) do SSE on object confidence score
 # sum losses for all grid cells
-def loss_custom(x, true_box_grid, model=None, true_box_mask=None, training=True, count=-1):
+def loss_custom(x, true_box_grid, model, true_box_mask=None, training=True, count=-1):
     # training=training is needed only if there are layers with different
     # behavior during training versus inference (e.g. Dropout).
     y_ = model(x, training=training)
@@ -161,6 +161,8 @@ def loss_custom(x, true_box_grid, model=None, true_box_mask=None, training=True,
     best_ious = tf.keras.backend.max(iou_scores, axis=4)  # Best IOU scores.
     best_ious = tf.expand_dims(best_ious, 4)
 
+    print('max prediction/true iou', np.amax(best_ious.numpy()))
+
     # A detector has found an object if IOU > thresh for some true box.
     object_detections = tf.keras.backend.cast(best_ious > 0.6, dtype=tf.float32)
 
@@ -183,8 +185,6 @@ def loss_custom(x, true_box_grid, model=None, true_box_mask=None, training=True,
         debug_output(true_box_grid, class_probs, pred_boxes, true_box_mask, detector_mask, best_ious)
     
     matching_boxes = true_box_grid[..., :4]
-    print('shape of pred boxes', pred_boxes.shape)
-    print('shape of matching boxes', matching_boxes.shape)
     coord_loss = params.coord_loss_weight * detector_mask[..., :1] * tf.math.square(matching_boxes - pred_boxes)
 
     confidence_loss_sum = tf.keras.backend.sum(conf_loss)
@@ -270,7 +270,7 @@ def loss_keras(true_box_grid, y_):
     return total_loss
 
 
-def grad(model, inputs, true_box_grid, box_mask, count):
+def grad(model, inputs, true_box_grid, box_mask=None, count=-1):
     with tf.GradientTape() as tape:
         loss_value = loss_custom(inputs, true_box_grid, model, box_mask, True, count)
     return loss_value, tape.gradient(loss_value, model.trainable_variables)
@@ -315,28 +315,49 @@ def remove_mask(image, true_box_grid, mask_grid):
     return image, true_box_grid
 
 
-def get_dataset():
-    FILENAME = 'image_grid_dataset_train.tfrecord'
-    dataset = tf.data.TFRecordDataset(FILENAME)   
+def get_dataset(file_name):
+    #FILENAME = 'image_grid_dataset_train.tfrecord'
+    dataset = tf.data.TFRecordDataset(file_name)   
     dataset = dataset.map(_parse_image_function)
     dataset = dataset.map(format_data)
 
     dataset = dataset.map(remove_orig_boxes)
+    dataset = dataset.map(remove_mask)
     dataset = dataset.batch(params.batch_size)
     dataset = dataset.shuffle(params.batch_size * 2)
     return dataset
 
 
+def get_metrics(pred_boxes, pred_scores, pred_classes, pred_grid_indexes, true_grid):
+    mask = create_mask(true_grid)
+    zero = tf.zeros_like(true_grid)
+    masked_grid = true_grid * mask
+    where = tf.not_equal(masked_grid, zero)
+    indices = tf.where(where)
+    grid_indices = indices[:,:4]
+    uniques = np.unique(grid_indices.numpy(), axis=0)
+    print('box locations in true grid', uniques)
+    print('box locations in predictions', pred_grid_indexes)
+
+
+def run_validation(val_dataset, model):
+    print('running validation set')
+    for val_x, val_grid in val_dataset:
+        logits = model(val_x, training=False)
+        transformed_pred = DetectNet.predict_transform(logits)
+        pred_boxes, pred_scores, pred_classes, pred_grid_indexes = DetectNet.filter_boxes(transformed_pred)
+        if pred_boxes.size == 0:
+            #print('no prediction boxes returned from filter_boxes')
+            x=2
+        else:
+            get_metrics(pred_boxes, pred_scores, pred_classes, pred_grid_indexes, val_grid)
+
+
 # each object in training image is assigned to grid cell that contains object's midpoint
 # and anchor box for the grid cell with highest IOU
 def train():
-    dataset = get_dataset()
-    '''
-    VAL_FILENAME = 'data/validation/segment-272435602399417322_2884_130_2904_130_with_camera_labels.tfrecord'
-    val_dataset = tf.data.TFRecordDataset(VAL_FILENAME, compression_type='')
-    val_dataset.batch(params.batch_size)
-    total_val = len(val_dataset)
-    '''
+    train_dataset = get_dataset('image_grid_dataset_train.tfrecord')
+    val_dataset = get_dataset('validation.tfrecord')
 
     model = create_model()
     optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001)
@@ -345,15 +366,21 @@ def train():
     # then check iou of each nms box with each ground truth from val set, if above threshold compare classification, use comp_nms_gt()
     #for epoch in range(params.epochs):
     count = 0
-    for x, true_box_grid, box_mask in dataset:
+    for x, true_box_grid in train_dataset:
         #assert not np.any(np.isnan(true_box_grid.numpy()))
         #assert not np.any(np.isnan(x.numpy()))
         #print(x.shape, true_box_grid.shape, box_mask.shape)
-        loss_value, grads = grad(model, x, true_box_grid, box_mask, count)
+        loss_value, grads = grad(model, x, true_box_grid)
         print('train loss is ', loss_value)
         grads, _ = tf.clip_by_global_norm(grads, 5.0)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
+
+        # run on cpu?
+        if count % 10 == 0:
+            run_validation(val_dataset, model)
+        
         count += 1
+
 
 
 def train_keras():
