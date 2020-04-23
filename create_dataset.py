@@ -1,4 +1,4 @@
-#from waymo_open_dataset import dataset_pb2 as open_dataset
+from waymo_open_dataset import dataset_pb2 as open_dataset
 import numpy as np
 import tensorflow as tf
 import params
@@ -129,7 +129,7 @@ def image_example(image_string, obj_vectors):
     boxes = tf.train.FeatureLists(feature_list=box_dict)
 
     objs = np.array(obj_vectors)
-    true_box_grid, box_mask = create_true_box_grid(objs, count)
+    true_box_grid, box_mask = create_true_box_grid(objs)
     #print('grid shape ', true_box_grid.shape)
     true_box_grid_flat = true_box_grid.reshape(-1)
     #print('flattened shape ', true_box_grid_flat.shape)
@@ -153,9 +153,9 @@ def image_example(image_string, obj_vectors):
     return example
 
 
+# breaking on file segment-17539775446039009812_440_000_460_000_with_camera_labels.tfrecord
 # standard jpeg dimensions are width by height, images in waymo dataset seem to be height by width after tf decode
-def convert():
-    record_file = 'image_grid_dataset_train.tfrecord'
+def convert(training, record_file, path):
 
     images = []
     img_boxes = []
@@ -164,10 +164,15 @@ def convert():
     img_num = 0
     max_x = 0
     max_y = 0
-    for filename in os.listdir('data/train'):
-        filepath = 'data/train/' + filename
+    break_var = False
+    for filename in os.listdir(path):
+        if break_var:
+            break
+        filepath = path + filename
         dataset = tf.data.TFRecordDataset(filepath, compression_type='')
         for data in dataset:
+            if break_var:
+                break
             frame = open_dataset.Frame()
             frame.ParseFromString(bytearray(data.numpy()))
             #print('num images in frame {}, num labels in frame {}'.format(len(frame.images), len(frame.camera_labels)))
@@ -183,6 +188,10 @@ def convert():
                     print('processing image {}'.format(img_num))
                     #print('max x {} max y {}'.format(max_x, max_y))
                 img_num += 1
+                if img_num == 500 and not training:
+                    print('breaking on file', filename)
+                    break_var = True
+                    break
                 
                 num_objects = len(camera_labels.labels)
                 obj_vectors = []
@@ -212,14 +221,14 @@ def convert():
                 
                 #draw_orig_image(image, obj_vectors, count)
                 count += 1
-                ex = image_example(image_obj.image, obj_vectors, count)
+                ex = image_example(image_obj.image, obj_vectors)
                 examples.append(ex)
 
     #print('max x ', max_x)    
     #print('max y', max_y)
-    #with tf.io.TFRecordWriter(record_file) as writer:
-    #    for ex in examples:            
-    #        writer.write(ex.SerializeToString())   
+    with tf.io.TFRecordWriter(record_file) as writer:
+        for ex in examples:            
+            writer.write(ex.SerializeToString())   
 
     #print('outer for loop {} times'.format(count))
     #y = tf.ragged.constant(img_boxes)
@@ -358,6 +367,6 @@ def test_grid_dataset():
 
 
 if __name__ == '__main__':
-    #convert() # this creates the tfrecord file
-    test_grid_dataset()
+    convert(False, 'validation.tfrecord', 'data/validation/') # this creates the tfrecord file
+    #test_grid_dataset()
     #convert_test()
