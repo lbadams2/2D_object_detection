@@ -7,8 +7,9 @@ import params
 
 
 # true box mask is 2-dim
-def debug_output(true_box_grid, pred_class_probs, pred_coords, true_box_mask=None, mem_mask=None):
+def debug_output(true_box_grid, pred_class_probs, pred_coords, true_box_mask=None, mem_mask=None, best_ious=None):
     zero = tf.zeros_like(true_box_grid)
+    zero4 = tf.zeros_like(true_box_grid[...,:4])
     # where will be same shape as true_box_grid with true or false in each cell if not equal to zero
     where = tf.not_equal(true_box_grid, zero)            
     indices = tf.where(where)
@@ -17,6 +18,7 @@ def debug_output(true_box_grid, pred_class_probs, pred_coords, true_box_mask=Non
     print('number of non zero values true box grid using zero mask', grid_indices.shape)
     print('')
 
+    '''
     if true_box_mask is not None:
         expanded_mask = tf.tile(true_box_mask, [1,1,1,1,3])
         expanded_mask = expanded_mask[...,:5]
@@ -28,7 +30,17 @@ def debug_output(true_box_grid, pred_class_probs, pred_coords, true_box_mask=Non
         print('')
 
         test_probs = true_box_mask[..., :1] * pred_class_probs
+        where = tf.not_equal(test_probs, zero)
+        indices = tf.where(where)
+        pred_prob_indices = indices[:,:4]
+        print('number of non zero pred class probs using true box mask', pred_prob_indices.shape)
+        
         test_coords = true_box_mask[..., :1] * pred_coords
+        where = tf.not_equal(test_coords, zero4)
+        indices = tf.where(where)
+        pred_coord_indices = indices[:,:4]
+        print('number of non zero pred coord probs using true box mask', pred_coord_indices.shape)
+
 
     if mem_mask is not None:
         mem_masked_grid = true_box_grid * mem_mask
@@ -39,23 +51,33 @@ def debug_output(true_box_grid, pred_class_probs, pred_coords, true_box_mask=Non
         print('')
 
         test_probs = mem_mask[..., :1] * pred_class_probs
+        where = tf.not_equal(test_probs, zero)
+        indices = tf.where(where)
+        pred_prob_indices = indices[:,:4]
+        print('number of non zero pred class probs using mem mask', pred_prob_indices.shape)
+        
         test_coords = mem_mask[..., :1] * pred_coords
+        where = tf.not_equal(test_coords, zero4)
+        indices = tf.where(where)
+        pred_coord_indices = indices[:,:4]
+        print('number of non zero pred coord probs using mem mask', pred_coord_indices.shape)
+    
 
     #test_probs = true_box_mask[..., :1] * pred_class_probs
     where = tf.not_equal(test_probs, zero)
     indices = tf.where(where)
     pred_prob_indices = indices[:,:4]
-    print('number of non zero values pred class probs using true box mask', pred_prob_indices.shape)
+    print('number of non zero values pred class probs using zero mask', pred_prob_indices.shape)
     print('')
 
     print('number of objects for coords should be number of non zero values divided by 4, coord vec len 4, not 5 like previous 3')
-    zero = tf.zeros_like(pred_coords)
     #test_coords = true_box_mask[..., :1] * pred_coords
-    where = tf.not_equal(test_coords, zero)
+    where = tf.not_equal(test_coords, zero4)
     indices = tf.where(where)
     pred_coord_indices = indices[:,:4]
-    print('number of non zero values pred class probs using true box mask', pred_coord_indices.shape)
+    print('number of non zero values pred class coords using zero mask', pred_coord_indices.shape)
     print('')
+    '''
 
     true_vecs = tf.gather_nd(true_box_grid, grid_indices)
     print('printing one true grid vector with object', grid_indices[0])
@@ -71,11 +93,17 @@ def debug_output(true_box_grid, pred_class_probs, pred_coords, true_box_mask=Non
     print('printing corresponding pred coord vector', grid_indices[0])
     print(pred_coord_vecs[0])
     print('')
+
+    # pred_coord_vecs will contain a lot of duplicates, because grid_indices counts each 4 dim index 5 times (len 5 vec at each index)
+
+
     
     uniques, idx, counts = tf.unique_with_counts(true_vecs[:,4])
     print('object types in batch', uniques)
     print('object counts by type', counts)
     print('')
+
+    print('shape of true box mask', )
 
     
 
@@ -152,9 +180,11 @@ def loss_custom(x, true_box_grid, model=None, true_box_mask=None, training=True,
     pred_boxes = tf.concat([center_coords, wh_coords], axis=-1)
     
     if count % 15 == 0:
-        debug_output(true_box_grid, class_probs, pred_boxes, true_box_mask, detector_mask)
+        debug_output(true_box_grid, class_probs, pred_boxes, true_box_mask, detector_mask, best_ious)
     
     matching_boxes = true_box_grid[..., :4]
+    print('shape of pred boxes', pred_boxes.shape)
+    print('shape of matching boxes', matching_boxes.shape)
     coord_loss = params.coord_loss_weight * detector_mask[..., :1] * tf.math.square(matching_boxes - pred_boxes)
 
     confidence_loss_sum = tf.keras.backend.sum(conf_loss)
@@ -167,7 +197,7 @@ def loss_custom(x, true_box_grid, model=None, true_box_mask=None, training=True,
     return total_loss
 
 
-def loss_keras(y_, true_box_grid):
+def loss_keras(true_box_grid, y_):
     # training=training is needed only if there are layers with different
     # behavior during training versus inference (e.g. Dropout).
     #y_ = model(x, training=training)
@@ -227,7 +257,6 @@ def loss_keras(y_, true_box_grid):
     pred_boxes = tf.concat([center_coords, wh_coords], axis=-1)
     
     #debug_output(true_box_grid, class_probs, pred_boxes, None, detector_mask)
-    
     matching_boxes = true_box_grid[..., :4]
     coord_loss = params.coord_loss_weight * detector_mask[..., :1] * tf.math.square(matching_boxes - pred_boxes)
 
@@ -310,15 +339,19 @@ def train():
     '''
 
     model = create_model()
-    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001)
+    #optimizer = tf.keras.optimizers.SGD()
     # to get validation stats need to do nms during training also, return result of nms in addition to all boxes
     # then check iou of each nms box with each ground truth from val set, if above threshold compare classification, use comp_nms_gt()
     #for epoch in range(params.epochs):
     count = 0
     for x, true_box_grid, box_mask in dataset:
+        #assert not np.any(np.isnan(true_box_grid.numpy()))
+        #assert not np.any(np.isnan(x.numpy()))
         #print(x.shape, true_box_grid.shape, box_mask.shape)
         loss_value, grads = grad(model, x, true_box_grid, box_mask, count)
         print('train loss is ', loss_value)
+        grads, _ = tf.clip_by_global_norm(grads, 5.0)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
         count += 1
 
@@ -371,4 +404,4 @@ def print_results(model, dataset):
     plt.show()
 
 if __name__ == '__main__':
-    train_keras()
+    train()
