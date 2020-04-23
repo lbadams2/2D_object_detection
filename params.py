@@ -2,7 +2,7 @@ import numpy as np
 
 ########## Hyper Parameters ##################
 batch_size = 16
-epochs = 10
+epochs = 15
 kernel_size = 3
 pool_size = 2
 grid_stride = 32 # could also use 40
