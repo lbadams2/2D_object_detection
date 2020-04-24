@@ -142,7 +142,7 @@ def loss_custom(x, true_box_grid, model=None, true_box_mask=None, training=True,
 
     # A detector has found an object if IOU > thresh for some true box.
     object_detections = tf.keras.backend.cast(
-        best_ious > 0.6, dtype=tf.float32)
+        best_ious > params.iou_thresh, dtype=tf.float32)
 
     # for both no obj and obj only calculate loss for boxes that had high ious
     no_obj_weights = params.noobj_loss_weight * \
@@ -162,7 +162,7 @@ def loss_custom(x, true_box_grid, model=None, true_box_mask=None, training=True,
     # keras_yolo does a sigmoid on center_coords here but they should already be between 0 and 1 from predict_transform
     pred_boxes = tf.concat([center_coords, wh_coords], axis=-1)
 
-    #if count % 15 == 0:
+    # if count % 15 == 0:
     #    debug_output(true_box_grid, class_probs, pred_boxes,
     #                 true_box_mask, detector_mask)
 
@@ -318,18 +318,67 @@ def get_dataset(file_name):
     return dataset
 
 
-def get_metrics(pred_boxes, pred_scores, pred_classes, pred_grid_indexes, true_grid):
-    mask = create_mask(true_grid)
-    zero = tf.zeros_like(true_grid)
-    masked_grid = true_grid * mask
-    where = tf.not_equal(masked_grid, zero)
-    indices = tf.where(where)
-    grid_indices = indices[:, :4]
-    uniques = np.unique(grid_indices.numpy(), axis=0)
+def iou(pred_boxes, true_boxes):
+    # max bottom left corner
+    intersect_mins = np.maximum(pred_boxes[:,:2], true_boxes[:,:2])
+    # min top right corner
+    intersect_maxes = np.minimum(pred_boxes[:,2:4], true_boxes[:,2:4])
+    intersect_wh = np.maximum(intersect_maxes - intersect_mins, 0.)
+    # product of difference between x max and x min, y max and y min
+    intersect_areas = intersect_wh[..., 0] * intersect_wh[..., 1]
 
-    # get matching indexes and find iou
-    print('box locations in true grid', uniques)
-    print('box locations in predictions', pred_grid_indexes)
+    pred_areas = (pred_boxes[:,2] - pred_boxes[:,0]) * (pred_boxes[:,3] - pred_boxes[:,1])
+    true_areas = (true_boxes[:,2] - true_boxes[:,0]) * (true_boxes[:,3] - true_boxes[:,1])
+
+    union_areas = pred_areas + true_areas - intersect_areas
+    ious = intersect_areas / union_areas
+
+    return ious
+
+
+def get_metrics(pred_boxes, pred_scores, pred_classes, pred_grid_indexes, true_grid):
+    mask = create_mask(true_grid)    
+    masked_grid = true_grid * mask
+    num_true_positives = 0
+    for i, img_boxes in enumerate(pred_boxes):        
+        img_true_grid = masked_grid[i]
+        zero = tf.zeros_like(img_true_grid)
+        where = tf.not_equal(img_true_grid, zero)
+        indices = tf.where(where)
+        grid_indices = indices[:, :3]
+        uniques = np.unique(grid_indices.numpy(), axis=0)
+        img_num_true_boxes = uniques.shape[0]
+        img_true_grid = img_true_grid.numpy()
+
+        img_pred_boxes = pred_boxes[i].numpy()
+        img_pred_scores = pred_scores[i].numpy()
+        img_pred_classes = pred_classes[i].numpy()
+        img_pred_inds = pred_grid_indexes[i].numpy()
+        
+        # get true positives
+        pred_set = set([tuple(ind) for ind in img_pred_inds])
+        true_set = set([tuple(ind) for ind in uniques])
+        true_positive_inds = np.array([ind for ind in pred_set & true_set])
+        num_tp = true_positive_inds.shape[0]
+
+        tp_pred_boxes = np.array((num_tp, 5))
+        tp_true_boxes = np.array((num_tp, 5))
+        for j, tp_ind in enumerate(true_positive_inds):
+            arr_ind = np.where(np.all(img_pred_inds == tp_ind, axis=1))
+            pred_box = img_pred_boxes[arr_ind]
+            pred_class_probs = img_pred_classes[arr_ind]
+            class_index = np.argmax(pred_class_probs)
+            pred_box = np.concatenate(pred_box, class_index)
+            true_box = img_true_grid[tp_ind[0], tp_ind[1], tp_ind[2]]
+            tp_pred_boxes[j] = pred_box
+            tp_true_boxes[j] = true_box
+        
+        tp_class = tp_pred_boxes == tp_true_boxes
+        ious = iou(tp_pred_boxes, tp_true_boxes)
+        true_positives = ious[tp_class]
+        true_positives = np.where(true_positives > params.iou_thresh)
+        num_true_positives += true_positives.size
+
 
 
 def run_validation(val_dataset, model):
@@ -339,10 +388,7 @@ def run_validation(val_dataset, model):
         transformed_pred = DetectNet.predict_transform(logits)
         pred_boxes, pred_scores, pred_classes, pred_grid_indexes = DetectNet.filter_boxes(
             transformed_pred)
-        if pred_boxes.size == 0:
-            #print('no prediction boxes returned from filter_boxes')
-            x = 2
-        else:
+        if np.array(pred_boxes).size > 0:
             get_metrics(pred_boxes, pred_scores, pred_classes,
                         pred_grid_indexes, val_grid)
 

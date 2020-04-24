@@ -171,39 +171,45 @@ class DetectNet():
         prediction_mask = box_class_scores >= params.object_conf
 
         # print('mask', box_scores.shape, box_classes.shape, box_class_scores.shape, prediction_mask.shape)
-
-        image_dims = K.stack([params.im_height, params.im_width, params.im_height, params.im_width])
+        image_dims = K.stack([params.scaled_height, params.scaled_width, params.scaled_height, params.scaled_width])
         image_dims = K.cast(K.reshape(image_dims, [1, 4]), dtype='float32')
         max_boxes_tensor = K.variable(params.max_boxes, dtype='int32')
         
         pred_boxes = []
         pred_scores = []
         pred_classes = []
-        nms_indexes = []
+        grid_indexes = []
 
         # loop through batch
-        for mask, box, score, cls in zip(prediction_mask, batch_boxes, box_class_scores, box_classes):
-            boxes = tf.boolean_mask(box, mask)
+        for mask, box, score, box_cls in zip(prediction_mask, batch_boxes, box_class_scores, box_classes):
+            # boxes is list of coordinates removed from grid
+            boxes = tf.boolean_mask(box, mask) # box is box grid for one image, mask is true/false grid for one image
             scores = tf.boolean_mask(score, mask)
-            classes = tf.boolean_mask(cls, mask)
-        
+            classes = tf.boolean_mask(box_cls, mask)
+
+            zero = tf.zeros_like(mask)
+            where = tf.not_equal(mask, zero)
+            indices = tf.where(where)
+            
             # print(boxes.shape, scores.shape, classes.shape)
 
             # scale bounding boxes to image size
             boxes = boxes * image_dims
 
-            # non-max-suppression  
+            # non-max-suppression, nms index is not related to grid coordinates
             nms_index = tf.image.non_max_suppression(boxes, scores, max_boxes_tensor, iou_threshold=params.nms_conf)
             boxes = K.gather(boxes, nms_index)
             scores = K.gather(scores, nms_index)
             classes = K.gather(classes, nms_index)
+            indices = K.gather(indices, nms_index)
             
             pred_boxes.append(boxes)
             pred_scores.append(scores)
             pred_classes.append(classes)
-            nms_indexes.append(nms_index)
-            
-        return np.array(pred_boxes), np.array(pred_scores), np.array(pred_classes), np.array(nms_indexes)
+            grid_indexes.append(indices)
+        
+        # each element of these lists may have different number of dimensions
+        return pred_boxes, pred_scores, pred_classes, grid_indexes
 
 
 

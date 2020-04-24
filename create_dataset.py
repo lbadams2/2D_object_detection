@@ -1,4 +1,4 @@
-#from waymo_open_dataset import dataset_pb2 as open_dataset
+from waymo_open_dataset import dataset_pb2 as open_dataset
 import numpy as np
 import tensorflow as tf
 import params
@@ -38,6 +38,86 @@ def draw_orig_image(image, labels, num):
     plt.axis('off')
     plt.savefig('testing/new/test-{}.jpeg'.format(num))
     plt.clf()
+
+
+
+def create_true_box_grid_validation(y):
+    #y = y.numpy()
+    true_box_grid = np.zeros(shape=(params.grid_height, params.grid_width, params.num_anchors, params.true_vec_len), dtype=np.float32)
+    box_mask = np.zeros(shape=(params.grid_height, params.grid_width, params.num_anchors, 2), dtype=np.float32)
+    mask_vec = np.ones((2), dtype=np.float32)
+    if y.shape[0] == 0:
+        return true_box_grid, box_mask
+    
+    #print('found objects')
+    orig_size = np.array([params.im_width, params.im_height])
+    center_boxes = y[:,:2] / orig_size
+    #center_boxes = tf.cast(center_boxes, tf.float32)
+    boxes_wh = y[:,2:4] / orig_size
+    #boxes_wh = tf.cast(boxes_wh, tf.float32)
+    conv_size = np.array([params.grid_width, params.grid_height])
+    #conv_size = tf.cast(conv_size, tf.float32)
+    center_boxes = center_boxes * conv_size
+    boxes_wh = boxes_wh * conv_size
+    # box coords are now normalized to be between [grid_width, grid_height] (same scale as anchors)
+    true_boxes = np.concatenate([center_boxes, boxes_wh, y[:,4:]], axis=1)
+    anchors = DetectNet.get_anchors().numpy()
+    
+    num_objs = y.shape[0]
+    for obj in range(num_objs):
+        best_iou = 0
+        best_anchor = 0
+        box = true_boxes[obj]
+        i = np.floor(box[1]).astype('int') # row
+        j = np.floor(box[0]).astype('int') # column
+        #j = tf.cast(j, tf.float32) 
+
+        # find best anchor for current box
+        for k, anchor in enumerate(anchors):
+            # center box
+            box_max = box[2:4] / 2
+            box_min = -box_max
+
+            # center anchor
+            anchor_max = anchor / 2
+            anchor_min = -anchor_max
+
+            intersect_mins = np.maximum(box_min, anchor_min)
+            intersect_maxes = np.minimum(box_max, anchor_max)
+            intersect_wh = np.maximum(intersect_maxes - intersect_mins, 0) # will be positive, subtracting negative
+            intersect_area = intersect_wh[0] * intersect_wh[1]
+            box_area = box[2] * box[3]
+            anchor_area = anchor[0] * anchor[1]
+            iou = intersect_area / (box_area + anchor_area - intersect_area)
+            if iou > best_iou:
+                best_iou = iou
+                best_anchor = k
+
+        # its possible 2 objects in same cell have same anchor, last will overwrite
+        if best_iou > 0:
+            box_coords = box[:4]
+            box_coords = box_coords / np.array([params.grid_width, params.grid_height, params.grid_width, params.grid_height])
+            box_coords = box_coords * np.array([params.scaled_width, params.scaled_height, params.scaled_width, params.scaled_height])
+            center_coords = box_coords[:2]
+            wh_coords = box_coords[2:4]
+            box_mins = center_coords - (wh_coords / 2.)
+            box_maxes = center_coords + (wh_coords / 2.)
+            corner_boxes = tf.concat([box_mins, box_maxes], axis=-1)
+            adjusted_box = np.array(
+                [
+                    corner_boxes[0],
+                    corner_boxes[1],
+                    corner_boxes[2], # quotient might be less than one, not sure why log is used
+                    corner_boxes[3],
+                    box[4] # class label
+                ],
+                dtype=np.float32
+            )
+            true_box_grid[i, j, best_anchor] = adjusted_box
+            box_mask[i, j, best_anchor] = mask_vec
+    # could pad to 1920 x 1920 with 0s then resize to 416 x 416
+    
+    return true_box_grid, box_mask
 
 
 
@@ -115,7 +195,7 @@ def create_true_box_grid(y):
     return true_box_grid, box_mask
 
 
-def image_example(image_string, obj_vectors):
+def image_example(image_string, obj_vectors, training):
 
     box_feature_list = []
     for vec in obj_vectors:
@@ -129,7 +209,10 @@ def image_example(image_string, obj_vectors):
     boxes = tf.train.FeatureLists(feature_list=box_dict)
 
     objs = np.array(obj_vectors)
-    true_box_grid, box_mask = create_true_box_grid(objs, count)
+    if training:
+        true_box_grid, box_mask = create_true_box_grid(objs)
+    else:
+        true_box_grid, box_mask = create_true_box_grid_validation(objs)
     #print('grid shape ', true_box_grid.shape)
     true_box_grid_flat = true_box_grid.reshape(-1)
     #print('flattened shape ', true_box_grid_flat.shape)
@@ -153,9 +236,9 @@ def image_example(image_string, obj_vectors):
     return example
 
 
+# breaking on file segment-17539775446039009812_440_000_460_000_with_camera_labels.tfrecord
 # standard jpeg dimensions are width by height, images in waymo dataset seem to be height by width after tf decode
-def convert():
-    record_file = 'image_grid_dataset_train.tfrecord'
+def convert(training, record_file, path):
 
     images = []
     img_boxes = []
@@ -164,10 +247,15 @@ def convert():
     img_num = 0
     max_x = 0
     max_y = 0
-    for filename in os.listdir('data/train'):
-        filepath = 'data/train/' + filename
+    break_var = False
+    for filename in os.listdir(path):
+        if break_var:
+            break
+        filepath = path + filename
         dataset = tf.data.TFRecordDataset(filepath, compression_type='')
         for data in dataset:
+            if break_var:
+                break
             frame = open_dataset.Frame()
             frame.ParseFromString(bytearray(data.numpy()))
             #print('num images in frame {}, num labels in frame {}'.format(len(frame.images), len(frame.camera_labels)))
@@ -183,6 +271,10 @@ def convert():
                     print('processing image {}'.format(img_num))
                     #print('max x {} max y {}'.format(max_x, max_y))
                 img_num += 1
+                if img_num == 500 and not training:
+                    print('breaking on file', filename)
+                    break_var = True
+                    break
                 
                 num_objects = len(camera_labels.labels)
                 obj_vectors = []
@@ -212,14 +304,14 @@ def convert():
                 
                 #draw_orig_image(image, obj_vectors, count)
                 count += 1
-                ex = image_example(image_obj.image, obj_vectors, count)
+                ex = image_example(image_obj.image, obj_vectors, training)
                 examples.append(ex)
 
     #print('max x ', max_x)    
     #print('max y', max_y)
-    #with tf.io.TFRecordWriter(record_file) as writer:
-    #    for ex in examples:            
-    #        writer.write(ex.SerializeToString())   
+    with tf.io.TFRecordWriter(record_file) as writer:
+        for ex in examples:            
+            writer.write(ex.SerializeToString())   
 
     #print('outer for loop {} times'.format(count))
     #y = tf.ragged.constant(img_boxes)
@@ -358,6 +450,6 @@ def test_grid_dataset():
 
 
 if __name__ == '__main__':
-    #convert() # this creates the tfrecord file
-    test_grid_dataset()
+    convert(False, 'validation.tfrecord', 'data/validation/') # this creates the tfrecord file
+    #test_grid_dataset()
     #convert_test()

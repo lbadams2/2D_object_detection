@@ -15,6 +15,7 @@ num_anchors = 5
 max_boxes = 20
 scaled_height = 416
 scaled_width = 416
+iou_thresh = .6
 
 # for 13 x 13 grid - (416 / 32)
 YOLO_ANCHORS = np.array(
