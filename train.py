@@ -6,7 +6,6 @@ from detect_net import DetectNet, create_model, create_darknet_model
 import params
 from tqdm import tqdm
 
-# true box mask is 2-dim
 
 
 def debug_output(true_box_grid, pred_class_probs, pred_coords, true_box_mask=None, mem_mask=None):
@@ -97,7 +96,7 @@ def create_mask(true_box_grid):
 # for cells with no object penalize classification score using SSE
 # for boxes in grid cell that aren't responsible for object (only 1 if 2 anchor boxes) do SSE on object confidence score
 # sum losses for all grid cells
-def loss_custom(x, true_box_grid, model=None, true_box_mask=None, training=True, count=-1):
+def loss_custom(x, true_box_grid, model=None, training=True, true_box_mask=None, count=-1):
     # training=training is needed only if there are layers with different
     # behavior during training versus inference (e.g. Dropout).
     y_ = model(x, training=training)
@@ -138,7 +137,7 @@ def loss_custom(x, true_box_grid, model=None, true_box_mask=None, training=True,
     best_ious = tf.keras.backend.max(iou_scores, axis=4)  # Best IOU scores.
     best_ious = tf.expand_dims(best_ious, 4)
 
-    print('max prediction/true iou', np.amax(best_ious.numpy()))
+    print('max prediction/true iou from loss', np.amax(best_ious.numpy()))
 
     # A detector has found an object if IOU > thresh for some true box.
     object_detections = tf.keras.backend.cast(
@@ -178,7 +177,8 @@ def loss_custom(x, true_box_grid, model=None, true_box_mask=None, training=True,
     total_loss = 0.5 * (confidence_loss_sum +
                         classification_loss_sum + coordinates_loss_sum)
 
-    return total_loss
+    transforms = (center_coords, wh_coords, obj_scores, class_probs)
+    return total_loss, transforms
 
 
 def loss_keras(y_, true_box_grid):
@@ -263,8 +263,8 @@ def loss_keras(y_, true_box_grid):
 
 def grad(model, inputs, true_box_grid, box_mask, count):
     with tf.GradientTape() as tape:
-        loss_value = loss_custom(
-            inputs, true_box_grid, model, box_mask, True, count)
+        loss_value, _ = loss_custom(
+            inputs, true_box_grid, model, True, box_mask, count)
     return loss_value, tape.gradient(loss_value, model.trainable_variables)
 
 
@@ -308,7 +308,7 @@ def remove_mask(image, true_box_grid, mask_grid):
 
 
 def get_dataset(file_name):
-    dataset = tf.data.TFRecordDataset(file_name)
+    dataset = tf.data.TFRecordDataset(file_name)    
     dataset = dataset.map(_parse_image_function)
     dataset = dataset.map(format_data)
 
@@ -319,16 +319,23 @@ def get_dataset(file_name):
 
 
 def iou(pred_boxes, true_boxes):
+    true_box_mins = true_boxes[:, :2] - (true_boxes[:, 2:4] / 2.)
+    true_box_maxes = true_boxes[:, :2] + (true_boxes[:, 2:4] / 2.)
+    # pred boxes are (y, x, y, x) because thats how nms wants them
+    true_boxes = np.concatenate([
+        np.reshape(true_box_mins[:, 1], (3, 1)), np.reshape(true_box_mins[:, 0], (3, 1)), np.reshape(true_box_maxes[:, 1], (3, 1)), np.reshape(true_box_maxes[:, 0], (3, 1))], axis=1)
     # max bottom left corner
-    intersect_mins = np.maximum(pred_boxes[:,:2], true_boxes[:,:2])
+    intersect_mins = np.maximum(pred_boxes[:, :2], true_boxes[:, :2])
     # min top right corner
-    intersect_maxes = np.minimum(pred_boxes[:,2:4], true_boxes[:,2:4])
+    intersect_maxes = np.minimum(pred_boxes[:, 2:4], true_boxes[:, 2:4])
     intersect_wh = np.maximum(intersect_maxes - intersect_mins, 0.)
     # product of difference between x max and x min, y max and y min
     intersect_areas = intersect_wh[..., 0] * intersect_wh[..., 1]
 
-    pred_areas = (pred_boxes[:,2] - pred_boxes[:,0]) * (pred_boxes[:,3] - pred_boxes[:,1])
-    true_areas = (true_boxes[:,2] - true_boxes[:,0]) * (true_boxes[:,3] - true_boxes[:,1])
+    pred_areas = (pred_boxes[:, 2] - pred_boxes[:, 0]) * \
+        (pred_boxes[:, 3] - pred_boxes[:, 1])
+    true_areas = (true_boxes[:, 2] - true_boxes[:, 0]) * \
+        (true_boxes[:, 3] - true_boxes[:, 1])
 
     union_areas = pred_areas + true_areas - intersect_areas
     ious = intersect_areas / union_areas
@@ -337,11 +344,24 @@ def iou(pred_boxes, true_boxes):
 
 
 def get_metrics(pred_boxes, pred_scores, pred_classes, pred_grid_indexes, true_grid):
-    mask = create_mask(true_grid)    
-    masked_grid = true_grid * mask
     num_true_positives = 0
-    for i, img_boxes in enumerate(pred_boxes):        
-        img_true_grid = masked_grid[i]
+    num_false_negatives = 0
+    num_false_positives = 0
+    if np.array(pred_boxes).size > 0:
+        zero = tf.zeros_like(true_grid)
+        where = tf.not_equal(true_grid, zero)
+        indices = tf.where(where)
+        grid_indices = indices[:, :4]
+        uniques = np.unique(grid_indices.numpy(), axis=0)
+        num_true_boxes = uniques.shape[0]
+        num_false_negatives = num_true_boxes
+        return num_true_positives, num_false_positives, num_false_negatives
+
+    #mask = create_mask(true_grid)
+    #masked_grid = true_grid * mask
+
+    for i, img_boxes in enumerate(pred_boxes):
+        img_true_grid = true_grid[i]
         zero = tf.zeros_like(img_true_grid)
         where = tf.not_equal(img_true_grid, zero)
         indices = tf.where(where)
@@ -354,74 +374,134 @@ def get_metrics(pred_boxes, pred_scores, pred_classes, pred_grid_indexes, true_g
         img_pred_scores = pred_scores[i].numpy()
         img_pred_classes = pred_classes[i].numpy()
         img_pred_inds = pred_grid_indexes[i].numpy()
-        
+
         # get true positives
         pred_set = set([tuple(ind) for ind in img_pred_inds])
         true_set = set([tuple(ind) for ind in uniques])
         true_positive_inds = np.array([ind for ind in pred_set & true_set])
         num_tp = true_positive_inds.shape[0]
+        if num_tp == 0:
+            num_false_negatives += len(true_set)
+            num_false_positives += len(pred_set)
+            continue
 
-        tp_pred_boxes = np.array((num_tp, 5))
-        tp_true_boxes = np.array((num_tp, 5))
+        print('******* found true positives before iou *********')
+        tp_pred_boxes = np.zeros((num_tp, 5))
+        tp_true_boxes = np.zeros((num_tp, 5))
         for j, tp_ind in enumerate(true_positive_inds):
             arr_ind = np.where(np.all(img_pred_inds == tp_ind, axis=1))
             pred_box = img_pred_boxes[arr_ind]
             pred_class_probs = img_pred_classes[arr_ind]
             class_index = np.argmax(pred_class_probs)
-            pred_box = np.concatenate(pred_box, class_index)
+            pred_box = np.hstack([pred_box, np.reshape(class_index, (1, 1))])
             true_box = img_true_grid[tp_ind[0], tp_ind[1], tp_ind[2]]
             tp_pred_boxes[j] = pred_box
             tp_true_boxes[j] = true_box
-        
+
         tp_class = tp_pred_boxes == tp_true_boxes
         ious = iou(tp_pred_boxes, tp_true_boxes)
         true_positives = ious[tp_class]
-        true_positives = np.where(true_positives > params.iou_thresh)
+        true_positives = np.argwhere(true_positives > params.iou_thresh)
         num_true_positives += true_positives.size
+        num_fn = len(true_set) - true_positives.size
+        num_fp = len(pred_set) - true_positives.size
+        num_false_negatives += num_fn
+        num_false_positives += num_fp
+
+    print('num true positives {}, num false positives {}, num false negatives {}'.format(
+        num_true_positives, num_false_positives, num_false_negatives))
+    return num_true_positives, num_false_positives, num_false_negatives
 
 
-
+# precision = tp/(tp + fp) and recall = tp/(tp + fn)
 def run_validation(val_dataset, model):
     print('running validation set')
+    total_loss, total_true_positives, total_false_positives, total_false_negatives = 0, 0, 0, 0
     for val_x, val_grid, val_mask in val_dataset:
-        logits = model(val_x, training=False)
-        transformed_pred = DetectNet.predict_transform(logits)
+        #logits = model(val_x, training=False)
+        #transformed_pred = DetectNet.predict_transform(logits)
+        loss, transformed_pred = loss_custom(
+            val_x, val_grid, model, training=False)
+        total_loss += loss
         pred_boxes, pred_scores, pred_classes, pred_grid_indexes = DetectNet.filter_boxes(
             transformed_pred)
-        if np.array(pred_boxes).size > 0:
-            get_metrics(pred_boxes, pred_scores, pred_classes,
-                        pred_grid_indexes, val_grid)
+
+        # run on cpu?
+        true_positives, false_positives, false_negatives = get_metrics(pred_boxes, pred_scores, pred_classes,
+                                                                       pred_grid_indexes, val_grid)
+        total_true_positives += true_positives
+        total_false_positives += false_positives
+        total_false_negatives += false_negatives
+
+    avg_loss = total_loss / params.val_size
+    if total_true_positives == 0 and total_false_positives == 0:
+        precision = 0
+    else:
+        precision = total_true_positives / \
+            (total_true_positives + total_false_positives)
+    recall = total_true_positives / \
+        (total_true_positives + total_false_negatives)
+
+    return avg_loss, precision, recall
+
+
+# precision y-axis, recall x-axis
+def plot_metrics(train_loss, val_loss, precision, recall):
+    plt.plot(val_loss)
+    plt.plot(train_loss)
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Training and Validation Loss')
+    plt.legend(['Validation', 'Training'], loc='upper left')
+    plt.savefig('loss.png')
+
+    plt.plot(recall, precision, '-o')
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Precision vs Recall')
+    plt.savefig('pr.png')
 
 
 # each object in training image is assigned to grid cell that contains object's midpoint
 # and anchor box for the grid cell with highest IOU
-def train(train_dataset, val_dataset, model, epochs=1):
+def train(train_dataset, val_dataset, model):
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
-    for e in tqdm(range(epochs)):
+    train_loss, val_loss, val_precision, val_recall = [], [], [], []
+    for e in tqdm(range(params.epochs)):
         # print('Epoch:{}/{}'.format(e+1, epochs))
         count = 0
+        epoch_loss = 0
         for x, true_box_grid, box_mask in train_dataset:
             #print(x.shape, true_box_grid.shape, box_mask.shape)
             loss_value, grads = grad(model, x, true_box_grid, box_mask, count)
+            epoch_loss += loss_value
             grads, _ = tf.clip_by_global_norm(grads, 5.0)
             optimizer.apply_gradients(zip(grads, model.trainable_variables))
             print('Loss:', loss_value)
 
-            # run on cpu?
             if count % 10 == 0:
-                run_validation(val_dataset, model)
+                vl, prec, rec = run_validation(val_dataset, model)
+                val_loss.append(vl)
+                val_precision.append(prec)
+                val_recall.append(rec)
+                print('validation loss', vl)
+                print('precision', prec)
+                print('recall', rec)
 
             count += 1
+        avg_train_loss = epoch_loss / params.train_size
+        train_loss.append(avg_train_loss)
 
+    plot_metrics(train_loss, val_loss, val_precision, val_recall)
     return model
 
 
 def main():
-    train_dataset = get_dataset('image_grid_dataset_train.tfrecord')
+    train_dataset = get_dataset('image_grid_dataset_train.tfrecord')    
     val_dataset = get_dataset('validation.tfrecord')
     model = create_darknet_model()
     # print(model.summary())
-    model = train(train_dataset, val_dataset, model, epochs=params.epochs)
+    model = train(train_dataset, val_dataset, model)
 
 
 def train_keras():
@@ -432,38 +512,6 @@ def train_keras():
                   loss=loss_keras)
 
     history = model.fit(dataset, epochs=10)
-
-
-def print_results(model, dataset):
-    history = model.fit_generator(
-        dataset,
-        steps_per_epoch=total_train,  # batch_size,
-        epochs=params.epochs,
-        validation_data=val_dataset,
-        validation_steps=total_val  # batch_size
-    )
-
-    acc = history.history['accuracy']
-    val_acc = history.history['val_accuracy']
-
-    loss = history.history['loss']
-    val_loss = history.history['val_loss']
-
-    epochs_range = range(epochs)
-
-    plt.figure(figsize=(8, 8))
-    plt.subplot(1, 2, 1)
-    plt.plot(epochs_range, acc, label='Training Accuracy')
-    plt.plot(epochs_range, val_acc, label='Validation Accuracy')
-    plt.legend(loc='lower right')
-    plt.title('Training and Validation Accuracy')
-
-    plt.subplot(1, 2, 2)
-    plt.plot(epochs_range, loss, label='Training Loss')
-    plt.plot(epochs_range, val_loss, label='Validation Loss')
-    plt.legend(loc='upper right')
-    plt.title('Training and Validation Loss')
-    plt.show()
 
 
 if __name__ == '__main__':

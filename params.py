@@ -32,6 +32,8 @@ grid_width = int(scaled_width // grid_stride)
 num_classes = 5
 pred_vec_len = 5 + num_classes
 true_vec_len = 5
+train_size = 14283
+val_size = 500
 
 TYPE_UNKNOWN = 0
 TYPE_VEHICLE = 1

@@ -167,7 +167,7 @@ class DetectNet():
         box_scores = obj_scores * class_probs
         box_classes = K.argmax(box_scores, axis=-1)
         box_class_scores = K.max(box_scores, axis=-1)
-        print('max score in batch', np.amax(box_class_scores.numpy()))
+        print('max score in batch from filter boxes', np.amax(box_class_scores.numpy()))
         prediction_mask = box_class_scores >= params.object_conf
 
         # print('mask', box_scores.shape, box_classes.shape, box_class_scores.shape, prediction_mask.shape)
@@ -193,8 +193,9 @@ class DetectNet():
             
             # print(boxes.shape, scores.shape, classes.shape)
 
-            # scale bounding boxes to image size
-            boxes = boxes * image_dims
+            # scale bounding boxes to image size - coordinates are on 13 x 13 scale
+            # leave them unscaled for now so we can compare to validation data
+            #boxes = boxes * image_dims
 
             # non-max-suppression, nms index is not related to grid coordinates
             nms_index = tf.image.non_max_suppression(boxes, scores, max_boxes_tensor, iou_threshold=params.nms_conf)
