@@ -22,6 +22,34 @@ def _float_feature(value):
   return tf.train.Feature(float_list=tf.train.FloatList(value=[value]))
 
 
+def draw_image_with_classes(image, labels, classes, num, trues=None):
+    colors = ['black', 'red', 'green', 'blue', 'yellow']
+    for vec, cls in zip(labels, classes):
+        print(cls, type(cls))
+        plt.gca().add_patch(patches.Rectangle(
+          xy=(vec[0] - 0.5 * vec[2], vec[1] - 0.5 * vec[3]),
+          width=vec[2],
+          height=vec[3],
+          linewidth=1.5,
+          edgecolor=colors[int(cls)],
+          facecolor='none'))
+    if trues != None:
+      for vec in trues:
+        plt.gca().add_patch(patches.Rectangle(
+          xy=(vec[0] - 0.5 * vec[2], vec[1] - 0.5 * vec[3]),
+          width=vec[2],
+          height=vec[3],
+          linewidth=1.5,
+          edgecolor='yellow',
+          facecolor='none'))
+    image = tf.image.resize(image, (params.scaled_height, params.scaled_width))
+    plt.imshow(image)
+    plt.grid(False)
+    plt.axis('off')
+    plt.savefig('testing/new/test-{}.jpeg'.format(num))
+    plt.clf()
+
+
 def draw_orig_image(image, labels, num):    
     for vec in labels:
         plt.gca().add_patch(patches.Rectangle(

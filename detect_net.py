@@ -215,35 +215,37 @@ class DetectNet():
 
     # predictions will be (batch, grid_height, grid_width, num_anchors * vec_len)
     @staticmethod
-    def predict_transform(predictions):
+    def separate_preds(predictions):
         predictions = tf.reshape(predictions, [-1, params.grid_height, params.grid_width, params.num_anchors, params.pred_vec_len])
+        center_coords = tf.math.sigmoid(predictions[...,:2])
+        wh_coords = predictions[...,2:4]
+        obj_scores = tf.math.sigmoid(predictions[...,4:5])
+        class_probs = tf.keras.activations.softmax(predictions[..., 5 : 5 + params.num_classes])
+        return center_coords, wh_coords, obj_scores, class_probs
 
-        conv_dims = predictions.shape[1:3]
+
+    @staticmethod
+    def transform_box(center_coords, wh_coords):
+        conv_dims = K.stack([params.grid_height, params.grid_height])
         conv_height_index = tf.keras.backend.arange(0, stop=conv_dims[0])
         conv_width_index = tf.keras.backend.arange(0, stop=conv_dims[1])
-        conv_height_index = tf.tile(conv_height_index, [conv_dims[1]]) # (169,) tensor with 0-12 repeating
-        conv_width_index = tf.tile(tf.expand_dims(conv_width_index, 0), [conv_dims[0], 1]) # (13, 13) tensor with x offset in each row
-        conv_width_index = tf.keras.backend.flatten(tf.transpose(conv_width_index)) # (169,) tensor with 13 0's followed by 13 1's, etc (y offsets)
-        conv_index = tf.transpose(tf.stack([conv_height_index, conv_width_index])) # (169, 2)
-        conv_index = tf.reshape(conv_index, [1, conv_dims[0], conv_dims[1], 1, 2]) # y offset, x offset
-        conv_dims = tf.cast(tf.reshape(conv_dims, [1, 1, 1, 1, 2]), tf.float32) # grid_height x grid_width, max dims of anchors
-
-        # makes the center coordinate between 0 and 1, each grid cell is normalized to 1 x 1
-        center_coords = tf.math.sigmoid(predictions[...,:2])
+        conv_height_index = tf.tile(conv_height_index, [conv_dims[1]])
+        conv_width_index = tf.tile(tf.expand_dims(conv_width_index, 0), [conv_dims[0], 1])
+        conv_width_index = tf.keras.backend.flatten(tf.transpose(conv_width_index))
+        conv_index = tf.transpose(tf.stack([conv_height_index, conv_width_index])) 
+        conv_index = tf.reshape(conv_index, [1, conv_dims[0], conv_dims[1], 1, 2])
+        conv_dims = tf.cast(tf.reshape(conv_dims, [1, 1, 1, 1, 2]), tf.float32)
         conv_index = tf.cast(conv_index, tf.float32)
-        center_coords = (center_coords + conv_index) / conv_dims
-
-        # makes the objectness score a probability between 0 and 1
-        obj_scores = tf.math.sigmoid(predictions[...,4:5])
         
+        center_coords = (center_coords + conv_index) / conv_dims
         anchors = DetectNet.get_anchors()
         anchors = tf.reshape(anchors, [1, 1, 1, params.num_anchors, 2])
-        # exp to make width and height positive then multiply by anchor dims to resize box to anchor
-        # should fit close to anchor, normalizing by conv_dims should make it between 0 and approx 1
-        wh_coords = (tf.math.exp(predictions[...,2:4])*anchors) / conv_dims
+        wh_coords = (tf.math.exp(wh_coords)*anchors) / conv_dims
 
-        # apply sigmoid to class scores to make them probabilities
-        class_probs = tf.keras.activations.softmax(predictions[..., 5 : 5 + params.num_classes])
-        
-        # (batch, rows, cols, anchors, vals)
+        return center_coords, wh_coords
+
+    @staticmethod
+    def transform(predictions):
+        center_coords, wh_coords, obj_scores, class_probs = DetectNet.separate_preds(predictions)
+        center_coords, wh_coords = DetectNet.transform_box(center_coords, wh_coords)
         return center_coords, wh_coords, obj_scores, class_probs

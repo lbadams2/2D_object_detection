@@ -97,24 +97,24 @@ def create_mask(true_box_grid):
 # for cells with no object penalize classification score using SSE
 # for boxes in grid cell that aren't responsible for object (only 1 if 2 anchor boxes) do SSE on object confidence score
 # sum losses for all grid cells
-def loss_custom(x, true_box_grid, model=None, true_box_mask=None, training=True, count=-1):
+def loss_custom(x, true_box_grid, model=None, true_box_mask=None, training=True, count=-1, printer=False):
     # training=training is needed only if there are layers with different
     # behavior during training versus inference (e.g. Dropout).
     y_ = model(x, training=training)
     # (batch, rows, cols, anchors, vals)
-    center_coords, wh_coords, obj_scores, class_probs = DetectNet.predict_transform(
-        y_)
+    center_coords, wh_coords, obj_scores, class_probs = DetectNet.separate_preds(y_)
     detector_mask = create_mask(true_box_grid)
-    total_loss = 0
+    total_loss = 0    
 
-    pred_wh_half = wh_coords / 2.
+    pred_center, pred_wh = DetectNet.transform_box(center_coords, wh_coords)
+    true_xy, true_wh = DetectNet.transform_box(true_box_grid[..., 0:2], true_box_grid[..., 2:4])
+
+    pred_wh_half = pred_wh / 2.
     # bottom left corner
-    pred_mins = center_coords - pred_wh_half
+    pred_mins = pred_center - pred_wh_half
     # top right corner
-    pred_maxes = center_coords + pred_wh_half
+    pred_maxes = pred_center + pred_wh_half
 
-    true_xy = true_box_grid[..., 0:2]
-    true_wh = true_box_grid[..., 2:4]
     true_wh_half = true_wh / 2.
     true_mins = true_xy - true_wh_half
     true_maxes = true_xy + true_wh_half
@@ -122,12 +122,12 @@ def loss_custom(x, true_box_grid, model=None, true_box_mask=None, training=True,
     # max bottom left corner
     intersect_mins = tf.math.maximum(pred_mins, true_mins)
     # min top right corner
-    intersect_maxes = tf.math.minimum(pred_maxes, true_maxes)
+    intersect_maxes = tf.math.minimum(pred_maxes, true_maxes)    
     intersect_wh = tf.math.maximum(intersect_maxes - intersect_mins, 0.)
     # product of difference between x max and x min, y max and y min
     intersect_areas = intersect_wh[..., 0] * intersect_wh[..., 1]
 
-    pred_areas = wh_coords[..., 0] * wh_coords[..., 1]
+    pred_areas = pred_wh[..., 0] * pred_wh[..., 1]
     true_areas = true_wh[..., 0] * true_wh[..., 1]
 
     union_areas = pred_areas + true_areas - intersect_areas
@@ -186,7 +186,7 @@ def loss_keras(y_, true_box_grid):
     # behavior during training versus inference (e.g. Dropout).
     #y_ = model(x, training=training)
     # (batch, rows, cols, anchors, vals)
-    center_coords, wh_coords, obj_scores, class_probs = DetectNet.predict_transform(
+    center_coords, wh_coords, obj_scores, class_probs = DetectNet.separate_preds(
         y_)
     detector_mask = create_mask(true_box_grid)
     total_loss = 0
@@ -260,6 +260,10 @@ def loss_keras(y_, true_box_grid):
 
     return total_loss
 
+def plot_loss(losses):
+  losses = [n.numpy() for n in losses]
+  y = [e for e in range(len(losses))]
+  plt.plot(y, losses)
 
 def grad(model, inputs, true_box_grid, box_mask, count):
     with tf.GradientTape() as tape:
@@ -317,7 +321,6 @@ def get_dataset(file_name):
     dataset = dataset.shuffle(params.batch_size * 2)
     return dataset
 
-
 def iou(pred_boxes, true_boxes):
     # max bottom left corner
     intersect_mins = np.maximum(pred_boxes[:,:2], true_boxes[:,:2])
@@ -334,6 +337,35 @@ def iou(pred_boxes, true_boxes):
     ious = intersect_areas / union_areas
 
     return ious
+
+def loss_iou(pred_boxes, true_boxes):
+    pred_center, pred_wh = pred_boxes[..., :2], pred_boxes[..., 2:4] 
+    true_center, true_wh = true_boxes[..., :2], true_boxes[..., 2:4]
+
+    pred_wh_half = pred_wh / 2.
+    # bottom left corner
+    pred_mins = pred_center - pred_wh_half
+    # top right corner
+    pred_maxes = pred_center + pred_wh_half
+
+    true_wh_half = true_wh / 2.
+    true_mins = true_center - true_wh_half
+    true_maxes = true_center + true_wh_half
+
+    # max bottom left corner
+    intersect_mins = tf.math.maximum(pred_mins, true_mins)
+    # min top right corner
+    intersect_maxes = tf.math.minimum(pred_maxes, true_maxes)    
+    intersect_wh = tf.math.maximum(intersect_maxes - intersect_mins, 0.)
+    # product of difference between x max and x min, y max and y min
+    intersect_areas = intersect_wh[..., 0] * intersect_wh[..., 1]
+
+    pred_areas = pred_wh[..., 0] * pred_wh[..., 1]
+    true_areas = true_wh[..., 0] * true_wh[..., 1]
+
+    union_areas = pred_areas + true_areas - intersect_areas
+    iou_scores = intersect_areas / union_areas
+    return iou_scores
 
 
 def get_metrics(pred_boxes, pred_scores, pred_classes, pred_grid_indexes, true_grid):
@@ -385,7 +417,7 @@ def run_validation(val_dataset, model):
     print('running validation set')
     for val_x, val_grid, val_mask in val_dataset:
         logits = model(val_x, training=False)
-        transformed_pred = DetectNet.predict_transform(logits)
+        transformed_pred = DetectNet.transform(logits)
         pred_boxes, pred_scores, pred_classes, pred_grid_indexes = DetectNet.filter_boxes(
             transformed_pred)
         if np.array(pred_boxes).size > 0:
@@ -397,6 +429,7 @@ def run_validation(val_dataset, model):
 # and anchor box for the grid cell with highest IOU
 def train(train_dataset, val_dataset, model, epochs=1):
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
+    losses = []
     for e in tqdm(range(epochs)):
         # print('Epoch:{}/{}'.format(e+1, epochs))
         count = 0
@@ -412,16 +445,21 @@ def train(train_dataset, val_dataset, model, epochs=1):
                 run_validation(val_dataset, model)
 
             count += 1
-
-    return model
+        losses.append(loss_value)
+    return model, losses
 
 
 def main():
     train_dataset = get_dataset('image_grid_dataset_train.tfrecord')
     val_dataset = get_dataset('validation.tfrecord')
+    
     model = create_darknet_model()
+    # model = tf.keras.models.load_model('model1.h5')
     # print(model.summary())
-    model = train(train_dataset, val_dataset, model, epochs=params.epochs)
+    
+    model, losses = train(train_dataset, val_dataset, model, epochs=params.epochs)
+    plot_loss(losses)
+    model.save('model1.h5')
 
 
 def train_keras():
