@@ -480,14 +480,14 @@ def run_validation(val_dataset, model):
         total_false_positives += false_positives
         total_false_negatives += false_negatives
 
+    print('metrics after for loop {} {} {}'.format(total_true_positives, total_false_positives, total_false_negatives))
     avg_loss = total_loss / params.val_size
-    if total_true_positives == 0 and total_false_positives == 0:
-        precision = 0
-    else:
-        precision = total_true_positives / \
-            (total_true_positives + total_false_positives)
-    recall = total_true_positives / \
-        (total_true_positives + total_false_negatives)
+    if total_true_positives != 0 or total_false_positives != 0:
+        print('total true pos or total false neg not 0')
+        precision = total_true_positives / (total_true_positives + total_false_positives)
+        print('precision is', precision)
+
+    recall = total_true_positives / (total_true_positives + total_false_negatives)
 
     return avg_loss, precision, recall
 
