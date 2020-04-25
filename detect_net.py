@@ -150,7 +150,8 @@ class DetectNet():
     @staticmethod
     def filter_boxes(transformed_predictions):
         center_coords, wh_coords, obj_scores, class_probs = transformed_predictions
-        
+        center_coords, wh_coords = DetectNet.transform_box(center_coords, wh_coords)
+        batch_pred_boxes = tf.concat([center_coords, wh_coords], axis=-1)
         # get bounding boxes from center and wh coords
         box_mins = center_coords - (wh_coords / 2.)
         box_maxes = center_coords + (wh_coords / 2.)
@@ -181,11 +182,12 @@ class DetectNet():
         grid_indexes = []
 
         # loop through batch
-        for mask, box, score, box_cls in zip(prediction_mask, batch_boxes, box_class_scores, box_classes):
+        for mask, box, score, box_cls, preds in zip(prediction_mask, batch_boxes, box_class_scores, box_classes, batch_pred_boxes):
             # boxes is list of coordinates removed from grid
             boxes = tf.boolean_mask(box, mask) # box is box grid for one image, mask is true/false grid for one image
             scores = tf.boolean_mask(score, mask)
             classes = tf.boolean_mask(box_cls, mask)
+            orig_pred_boxes = tf.boolean_mask(preds, mask)
 
             zero = tf.zeros_like(mask)
             where = tf.not_equal(mask, zero)
@@ -199,11 +201,11 @@ class DetectNet():
 
             # non-max-suppression, nms index is not related to grid coordinates
             nms_index = tf.image.non_max_suppression(boxes, scores, max_boxes_tensor, iou_threshold=params.nms_conf)
-            boxes = K.gather(boxes, nms_index)
+            boxes = K.gather(orig_pred_boxes, nms_index)
             scores = K.gather(scores, nms_index)
             classes = K.gather(classes, nms_index)
             indices = K.gather(indices, nms_index)
-            
+
             pred_boxes.append(boxes)
             pred_scores.append(scores)
             pred_classes.append(classes)
@@ -211,7 +213,6 @@ class DetectNet():
         
         # each element of these lists may have different number of dimensions
         return pred_boxes, pred_scores, pred_classes, grid_indexes
-
 
 
     # predictions will be (batch, grid_height, grid_width, num_anchors * vec_len)

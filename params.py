@@ -1,7 +1,7 @@
 import numpy as np
 
 ########## Hyper Parameters ##################
-batch_size = 16
+batch_size = 32
 epochs = 15
 kernel_size = 3
 pool_size = 2
@@ -15,7 +15,7 @@ num_anchors = 5
 max_boxes = 20
 scaled_height = 416
 scaled_width = 416
-iou_thresh = .6
+iou_thresh = .5
 
 # for 13 x 13 grid - (416 / 32)
 YOLO_ANCHORS = np.array(

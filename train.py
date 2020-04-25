@@ -392,6 +392,10 @@ def get_metrics(pred_boxes, pred_scores, pred_classes, pred_grid_indexes, true_g
         zero = tf.zeros_like(img_true_grid)
         where = tf.not_equal(img_true_grid, zero)
         indices = tf.where(where)
+        if indices.shape[0] == 0:
+          print('No true boxes.')
+          num_false_positives += len(pred_boxes)
+          continue
         grid_indices = indices[:, :3]
         uniques = np.unique(grid_indices.numpy(), axis=0)
         img_num_true_boxes = uniques.shape[0]
@@ -413,19 +417,23 @@ def get_metrics(pred_boxes, pred_scores, pred_classes, pred_grid_indexes, true_g
             continue
 
         print('******* found true positives before iou *********')
-        tp_pred_boxes = np.zeros((num_tp, 5))
-        tp_true_boxes = np.zeros((num_tp, 5))
+        tp_pred_boxes = np.zeros((num_tp, 4))
+        tp_true_boxes = np.zeros((num_tp, 4))
+        tp_pred_class = np.zeros((num_tp, 1))
+        tp_true_class = np.zeros((num_tp, 1))
         for j, tp_ind in enumerate(true_positive_inds):
             arr_ind = np.where(np.all(img_pred_inds == tp_ind, axis=1))
             pred_box = img_pred_boxes[arr_ind]
             pred_class_probs = img_pred_classes[arr_ind]
             class_index = np.argmax(pred_class_probs)
-            pred_box = np.hstack([pred_box, np.reshape(class_index, (1, 1))])
+            cls_val = pred_class_probs[class_index]
             true_box = img_true_grid[tp_ind[0], tp_ind[1], tp_ind[2]]
+            tp_pred_class[j] = np.reshape(cls_val, (1, 1))
             tp_pred_boxes[j] = pred_box
-            tp_true_boxes[j] = true_box
+            tp_true_boxes[j] = true_box[..., :4]
+            tp_true_class[j] = true_box[..., 4:5]
 
-        tp_class = tp_pred_boxes == tp_true_boxes
+        tp_class = tf.reshape(tp_pred_class == tp_true_class, (-1))
         ious = loss_iou(tp_pred_boxes, tp_true_boxes)
         true_positives = ious[tp_class]
         true_positives = np.argwhere(true_positives > params.iou_thresh)
@@ -454,6 +462,15 @@ def run_validation(val_dataset, model):
             transformed_pred)
         pred_center, pred_wh = DetectNet.transform_box(pred_boxes[..., :2], pred_boxes[..., 2:4])
         pred_boxes = tf.concat([pred_center, pred_wh], axis=-1)
+        
+        # convert val truth boxes
+        val_cls = val_grid[..., 4:5]
+        val_xy, val_wh = DetectNet.transform_box(val_grid[..., :2], val_grid[..., 2:4])
+        val_xy = val_mask[..., :1] * val_xy
+        val_wh = val_mask[..., :1] * val_wh
+        val_grid = tf.concat([val_xy, val_wh], axis=-1)
+        val_grid = tf.concat([val_grid, val_cls], axis=-1)
+        
         # run on cpu?
         true_positives, false_positives, false_negatives = get_metrics(pred_boxes, pred_scores, pred_classes,
                                                                        pred_grid_indexes, val_grid)
@@ -484,6 +501,8 @@ def plot_metrics(train_loss, val_loss, precision, recall):
     plt.savefig('loss.png')
 
     plt.plot(recall, precision, '-o')
+    plt.xlim(0, 1)
+    plt.ylim(0, 1)
     plt.xlabel('Recall')
     plt.ylabel('Precision')
     plt.title('Precision vs Recall')

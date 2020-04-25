@@ -240,7 +240,7 @@ def image_example(image_string, obj_vectors, training):
     if training:
         true_box_grid, box_mask = create_true_box_grid(objs)
     else:
-        true_box_grid, box_mask = create_true_box_grid_validation(objs)
+        true_box_grid, box_mask = create_true_box_grid(objs) #create_true_box_grid_validation(objs)
     #print('grid shape ', true_box_grid.shape)
     true_box_grid_flat = true_box_grid.reshape(-1)
     #print('flattened shape ', true_box_grid_flat.shape)
