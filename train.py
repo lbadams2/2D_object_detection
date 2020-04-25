@@ -416,7 +416,6 @@ def get_metrics(pred_boxes, pred_scores, pred_classes, pred_grid_indexes, true_g
             num_false_positives += len(pred_set)
             continue
 
-        print('******* found true positives before iou *********')
         tp_pred_boxes = np.zeros((num_tp, 4))
         tp_true_boxes = np.zeros((num_tp, 4))
         tp_pred_class = np.zeros((num_tp, 1))
@@ -483,6 +482,7 @@ def run_validation(val_dataset, model):
     #print('metrics after for loop {} {} {}'.format(total_true_positives, total_false_positives, total_false_negatives))
     avg_loss = total_loss / params.val_size
     total_true_positives = float(total_true_positives) # for python 2
+    precision = 0
     if total_true_positives != 0 or total_false_positives != 0:
         #print('total true pos or total false neg not 0')
         precision = total_true_positives / (total_true_positives + total_false_positives)
@@ -528,17 +528,15 @@ def train(train_dataset, val_dataset, model):
             grads, _ = tf.clip_by_global_norm(grads, 5.0)
             optimizer.apply_gradients(zip(grads, model.trainable_variables))
             print('Loss:', loss_value)
-
-            if count % 10 == 0:
-                vl, prec, rec = run_validation(val_dataset, model)
-                val_loss.append(vl)
-                val_precision.append(prec)
-                val_recall.append(rec)
-                print('validation loss', vl)
-                print('precision', prec)
-                print('recall', rec)
-
             count += 1
+
+        vl, prec, rec = run_validation(val_dataset, model)
+        val_loss.append(vl)
+        val_precision.append(prec)
+        val_recall.append(rec)
+        print('validation loss', vl)
+        print('precision', prec)
+        print('recall', rec)
         avg_train_loss = epoch_loss / params.train_size
         train_loss.append(avg_train_loss)
 
