@@ -374,7 +374,7 @@ def get_metrics(pred_boxes, pred_scores, pred_classes, pred_grid_indexes, true_g
     num_true_positives = 0
     num_false_negatives = 0
     num_false_positives = 0
-    if np.array(pred_boxes).size > 0:
+    if np.array(pred_boxes).size == 0:
         zero = tf.zeros_like(true_grid)
         where = tf.not_equal(true_grid, zero)
         indices = tf.where(where)
