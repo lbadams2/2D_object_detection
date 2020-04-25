@@ -1,11 +1,12 @@
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
-
+from tensorflow.keras import models
+import tensorflow.keras.backend as K
 from detect_net import DetectNet, create_model, create_darknet_model
 import params
 from tqdm import tqdm
-
+from create_dataset import draw_image_with_classes
 
 
 def debug_output(true_box_grid, pred_class_probs, pred_coords, true_box_mask=None, mem_mask=None):
@@ -511,6 +512,40 @@ def plot_metrics(train_loss, val_loss, precision, recall):
     plt.ylabel('Precision')
     plt.title('Precision vs Recall')
     plt.savefig('pr.png')
+
+
+def run_test():
+    model = models.load_model('model1.h5')
+    test_dataset = get_dataset('test.tfrecord')
+    total_true_positives, total_false_positives, total_false_negatives = 0, 0, 0
+    image_dims = K.stack([params.scaled_height, params.scaled_width, params.scaled_height, params.scaled_width])
+    num = 0
+    for x, test_grid, test_mask in test_dataset:
+        y_pred = model(x, training=False)
+        transformed_pred = DetectNet.separate_preds(y_pred)
+        pred_boxes, pred_scores, pred_classes, pred_grid_indexes = DetectNet.filter_boxes(transformed_pred)
+        scaled_boxes = pred_boxes * image_dims
+        test_cls = test_grid[..., 4]
+        test_xy, test_wh = DetectNet.transform_box(test_grid[..., :2], test_grid[..., 2:4])
+        test_grid = tf.concat([test_xy, test_wh], axis=-1)
+        test_grid = tf.concat([test_grid, test_cls], axis=-1)
+        true_positives, false_positives, false_negatives = get_metrics(pred_boxes, pred_scores, pred_classes,
+                                                                       pred_grid_indexes, test_grid)
+        batch_dim = x.shape[0].numpy()
+        for sample in range(batch_dim):
+            draw_image_with_classes(x[sample], scaled_boxes[sample], test_cls[sample], num)
+            num += 1
+        total_true_positives += true_positives
+        total_false_positives += false_positives
+        total_false_negatives += false_negatives
+
+    total_true_positives = float(total_true_positives) # for python 2
+    precision = 0
+    if total_true_positives != 0 or total_false_positives != 0:
+        precision = total_true_positives / (total_true_positives + total_false_positives)
+    recall = total_true_positives / (total_true_positives + total_false_negatives)
+
+
 
 
 # each object in training image is assigned to grid cell that contains object's midpoint
