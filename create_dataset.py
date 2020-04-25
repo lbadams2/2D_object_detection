@@ -1,4 +1,4 @@
-from waymo_open_dataset import dataset_pb2 as open_dataset
+#from waymo_open_dataset import dataset_pb2 as open_dataset
 import numpy as np
 import tensorflow as tf
 import params
@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import os
 from detect_net import DetectNet
-import train
+#import train
 
 plt.figure(figsize=(16, 8))
 
@@ -25,7 +25,8 @@ def _float_feature(value):
 def draw_image_with_classes(image, labels, classes, num, trues=None):
     colors = ['black', 'red', 'green', 'blue', 'yellow']
     for vec, cls in zip(labels, classes):
-        print(cls, type(cls))
+        vec = vec.numpy()
+        cls = cls.numpy()
         plt.gca().add_patch(patches.Rectangle(
           xy=(vec[0] - 0.5 * vec[2], vec[1] - 0.5 * vec[3]),
           width=vec[2],
@@ -276,7 +277,11 @@ def convert(training, record_file, path):
     max_x = 0
     max_y = 0
     break_var = False
+    first = True
     for filename in os.listdir(path):
+        if first:
+            first = False
+            continue
         if break_var:
             break
         filepath = path + filename
@@ -299,7 +304,7 @@ def convert(training, record_file, path):
                     print('processing image {}'.format(img_num))
                     #print('max x {} max y {}'.format(max_x, max_y))
                 img_num += 1
-                if img_num == 500 and not training:
+                if img_num == 1000 and not training:
                     print('breaking on file', filename)
                     break_var = True
                     break
@@ -478,6 +483,6 @@ def test_grid_dataset():
 
 
 if __name__ == '__main__':
-    convert(False, 'validation.tfrecord', 'data/validation/') # this creates the tfrecord file
+    convert(False, 'test.tfrecord', 'data/validation/') # this creates the tfrecord file
     #test_grid_dataset()
     #convert_test()

@@ -519,21 +519,27 @@ def run_test():
     test_dataset = get_dataset('test.tfrecord')
     total_true_positives, total_false_positives, total_false_negatives = 0, 0, 0
     image_dims = K.stack([params.scaled_height, params.scaled_width, params.scaled_height, params.scaled_width])
+    image_dims = tf.cast(image_dims, tf.float32)
     num = 0
     for x, test_grid, test_mask in test_dataset:
         y_pred = model(x, training=False)
         transformed_pred = DetectNet.separate_preds(y_pred)
         pred_boxes, pred_scores, pred_classes, pred_grid_indexes = DetectNet.filter_boxes(transformed_pred)
-        scaled_boxes = pred_boxes * image_dims
-        test_cls = test_grid[..., 4]
+        scaled_boxes = []
+        for img_boxes in pred_boxes:
+            sb = img_boxes * image_dims
+            scaled_boxes.append(sb)
+        test_cls = test_grid[..., 4:5]
         test_xy, test_wh = DetectNet.transform_box(test_grid[..., :2], test_grid[..., 2:4])
+        test_xy = test_mask[..., :1] * test_xy
+        test_wh = test_mask[..., :1] * test_wh
         test_grid = tf.concat([test_xy, test_wh], axis=-1)
         test_grid = tf.concat([test_grid, test_cls], axis=-1)
         true_positives, false_positives, false_negatives = get_metrics(pred_boxes, pred_scores, pred_classes,
                                                                        pred_grid_indexes, test_grid)
-        batch_dim = x.shape[0].numpy()
+        batch_dim = x.shape[0]
         for sample in range(batch_dim):
-            draw_image_with_classes(x[sample], scaled_boxes[sample], test_cls[sample], num)
+            draw_image_with_classes(x[sample], scaled_boxes[sample], pred_classes[sample], num)
             num += 1
         total_true_positives += true_positives
         total_false_positives += false_positives
@@ -544,6 +550,8 @@ def run_test():
     if total_true_positives != 0 or total_false_positives != 0:
         precision = total_true_positives / (total_true_positives + total_false_positives)
     recall = total_true_positives / (total_true_positives + total_false_negatives)
+    print('precision', precision)
+    print('recall', precision)
 
 
 
@@ -604,4 +612,5 @@ def train_keras():
 
 if __name__ == '__main__':
     # train_keras()
-    main()
+    #main()
+    run_test()
