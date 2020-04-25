@@ -177,7 +177,7 @@ def loss_custom(x, true_box_grid, model=None, training=True, true_box_mask=None,
     total_loss = 0.5 * (confidence_loss_sum +
                         classification_loss_sum + coordinates_loss_sum)
 
-    transforms = (center_coords, wh_coords, obj_scores, class_probs)
+    transforms = (pred_center, pred_wh, obj_scores, class_probs)
     return total_loss, transforms
 
 
@@ -460,8 +460,8 @@ def run_validation(val_dataset, model):
         total_loss += loss
         pred_boxes, pred_scores, pred_classes, pred_grid_indexes = DetectNet.filter_boxes(
             transformed_pred)
-        pred_center, pred_wh = DetectNet.transform_box(pred_boxes[..., :2], pred_boxes[..., 2:4])
-        pred_boxes = tf.concat([pred_center, pred_wh], axis=-1)
+        #pred_center, pred_wh = DetectNet.transform_box(pred_boxes[..., :2], pred_boxes[..., 2:4])
+        #pred_boxes = tf.concat([pred_center, pred_wh], axis=-1)
         
         # convert val truth boxes
         val_cls = val_grid[..., 4:5]
