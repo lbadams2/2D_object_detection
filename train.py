@@ -502,6 +502,7 @@ def plot_metrics(train_loss, val_loss, precision, recall):
     plt.title('Training and Validation Loss')
     plt.legend(['Validation', 'Training'], loc='upper left')
     plt.savefig('loss.png')
+    plt.clf()
 
     plt.plot(recall, precision, '-o')
     plt.xlim(0, 1)
@@ -541,6 +542,8 @@ def train(train_dataset, val_dataset, model):
         train_loss.append(avg_train_loss)
 
     plot_metrics(train_loss, val_loss, val_precision, val_recall)
+    print('precision', val_precision)
+    print('recall', val_recall)
     return model
 
 
