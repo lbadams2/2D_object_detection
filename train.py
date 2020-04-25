@@ -177,7 +177,7 @@ def loss_custom(x, true_box_grid, model=None, training=True, true_box_mask=None,
     total_loss = 0.5 * (confidence_loss_sum +
                         classification_loss_sum + coordinates_loss_sum)
 
-    transforms = (pred_center, pred_wh, obj_scores, class_probs)
+    transforms = (center_coords, wh_coords, obj_scores, class_probs)
     return total_loss, transforms
 
 
@@ -424,18 +424,20 @@ def get_metrics(pred_boxes, pred_scores, pred_classes, pred_grid_indexes, true_g
         for j, tp_ind in enumerate(true_positive_inds):
             arr_ind = np.where(np.all(img_pred_inds == tp_ind, axis=1))
             pred_box = img_pred_boxes[arr_ind]
-            pred_class_probs = img_pred_classes[arr_ind]
-            class_index = np.argmax(pred_class_probs)
-            cls_val = pred_class_probs[class_index]
+            cls_val = img_pred_classes[arr_ind]
+            #pred_class_probs = img_pred_classes[arr_ind]
+            #class_index = np.argmax(pred_class_probs)
+            #cls_val = pred_class_probs[class_index]
             true_box = img_true_grid[tp_ind[0], tp_ind[1], tp_ind[2]]
             tp_pred_class[j] = np.reshape(cls_val, (1, 1))
             tp_pred_boxes[j] = pred_box
             tp_true_boxes[j] = true_box[..., :4]
             tp_true_class[j] = true_box[..., 4:5]
 
-        tp_class = tf.reshape(tp_pred_class == tp_true_class, (-1))
-        ious = loss_iou(tp_pred_boxes, tp_true_boxes)
-        true_positives = ious[tp_class]
+        class_eq = tp_pred_class == tp_true_class
+        ious = loss_iou(tf.Variable(tp_pred_boxes), tf.Variable(tp_true_boxes))
+        ious = ious.numpy()
+        true_positives = ious[class_eq.flatten()]
         true_positives = np.argwhere(true_positives > params.iou_thresh)
         num_true_positives += true_positives.size
         num_fn = len(true_set) - true_positives.size
